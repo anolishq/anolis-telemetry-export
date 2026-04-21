@@ -31,7 +31,7 @@ def sha256_bytes(data: bytes) -> str:
 def fetch_url_bytes(url: str, timeout_seconds: int = 45) -> bytes:
     try:
         with urlopen(url, timeout=timeout_seconds) as response:
-            return response.read()
+            return bytes(response.read())
     except HTTPError as exc:
         raise RuntimeError(f"HTTP error while fetching {url}: {exc.code} {exc.reason}") from exc
     except URLError as exc:
