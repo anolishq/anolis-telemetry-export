@@ -38,11 +38,7 @@ def main() -> int:
         print(f"ERROR: failed to parse lock file: {exc}", file=sys.stderr)
         return 1
 
-    expected = (
-        lock.get("distribution", {}).get("sha256")
-        if isinstance(lock, dict)
-        else None
-    )
+    expected = lock.get("distribution", {}).get("sha256") if isinstance(lock, dict) else None
     if not isinstance(expected, str) or len(expected) != 64:
         print("ERROR: lock file missing valid distribution.sha256", file=sys.stderr)
         return 1
