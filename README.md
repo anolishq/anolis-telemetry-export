@@ -27,14 +27,27 @@ python scripts/verify-upstream-schema.py
 python -m pytest tests/integration/test_telemetry_export_service_unit.py -vv
 ```
 
-For full API usage and curl examples, see
-`tools/telemetry_export/README.md`.
+For full API usage and curl examples, see `tools/telemetry_export/README.md`.
 
 ## Upstream Schema Sync
 
 Canonical schema source is `anolishq/anolis`.
 
-Verify lock/checksum:
+## Release-Pinned Sync (Phase 3 default)
+
+After a tagged `anolis` release publishes telemetry schema artifacts:
+
+```bash
+python scripts/sync-upstream-schema-from-release.py --tag vX.Y.Z
+python scripts/verify-upstream-schema.py --require-release-artifact
+```
+
+This updates vendored schema and rewrites lock metadata in `release-artifact`
+mode with pinned checksums.
+
+## Manual Lock Verification
+
+Always verify current lock and schema parity before commit:
 
 ```bash
 python scripts/verify-upstream-schema.py
