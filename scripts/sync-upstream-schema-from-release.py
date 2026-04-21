@@ -40,10 +40,14 @@ def fetch_url_bytes(url: str, timeout_seconds: int = 45) -> bytes:
 
 def extract_tar_member(archive_bytes: bytes, member_path: str) -> bytes:
     with tarfile.open(fileobj=io.BytesIO(archive_bytes), mode="r:gz") as archive:
+        # tar -C <dir> . produces ./path members; try both forms.
         try:
             member = archive.getmember(member_path)
-        except KeyError as exc:
-            raise RuntimeError(f"schema member not found in artifact: {member_path}") from exc
+        except KeyError:
+            try:
+                member = archive.getmember(f"./{member_path}")
+            except KeyError as exc:
+                raise RuntimeError(f"schema member not found in artifact: {member_path}") from exc
 
         if not member.isfile():
             raise RuntimeError(f"schema member is not a regular file: {member_path}")

@@ -1,13 +1,20 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "source": {
     "repo": "anolishq/anolis",
     "path": "schemas/telemetry/telemetry-timeseries.schema.v1.json",
-    "ref": "e10a184428ca9620c553f73ae909f5fbd7b8eaef"
+    "tag": "v0.1.2"
   },
   "distribution": {
-    "mode": "manual-copy",
-    "sha256": "a8328beab89ab1da27f837d18558d414b44b83badc7f52a4059571c25b801abe"
+    "mode": "release-artifact",
+    "release": {
+      "repo": "anolishq/anolis",
+      "tag": "v0.1.2",
+      "asset": "anolis-0.1.2-telemetry-schema.tar.gz",
+      "manifest_asset": "telemetry-schema-manifest.json"
+    },
+    "schema_sha256": "a8328beab89ab1da27f837d18558d414b44b83badc7f52a4059571c25b801abe",
+    "asset_sha256": "861441207cbe0125b91db7587ec9728fce5aa660ef51aa76004ba64df63a3b9f"
   },
-  "synced_at_utc": "2026-04-21T01:08:18Z"
+  "synced_at_utc": "2026-04-21T03:31:42Z"
 }
