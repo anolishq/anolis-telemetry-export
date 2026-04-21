@@ -60,9 +60,12 @@ class LimitConfig:
     max_span_seconds: int
     max_rows: int
     max_response_bytes: int
+    max_stream_bytes: int
     max_selector_items: int
     request_timeout_seconds: int
     max_request_bytes: int
+    max_manifest_entries: int
+    manifest_ttl_seconds: int
 
 
 @dataclass(frozen=True)

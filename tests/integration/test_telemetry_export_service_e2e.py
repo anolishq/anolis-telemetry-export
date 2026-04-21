@@ -111,9 +111,12 @@ def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str,
             "max_span_seconds": 86400,
             "max_rows": 5000,
             "max_response_bytes": 5000,
+            "max_stream_bytes": 5000,
             "max_selector_items": 128,
             "request_timeout_seconds": 15,
             "max_request_bytes": 200000,
+            "max_manifest_entries": 1000,
+            "manifest_ttl_seconds": 3600,
         },
     }
 

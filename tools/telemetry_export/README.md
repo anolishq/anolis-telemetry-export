@@ -93,6 +93,11 @@ Supplying `timezone` returns `400 invalid_argument`.
 All formats use a bounded-memory spool-to-file pipeline before response
 streaming to avoid assembling full exports in RAM.
 
+Byte limits:
+
+1. `limits.max_response_bytes` applies to `format=json`.
+2. `limits.max_stream_bytes` applies to streamed formats (`csv`, `ndjson`).
+
 ## Run
 
 ```bash
@@ -255,4 +260,6 @@ python tools/telemetry_export/examples/query_signals.py \
 5. `authorization.enforce_selector_scope=true` requires at least one non-empty
    `allowed_*` allowlist.
 6. `limits.max_response_bytes` is enforced for `format=json`; streamed formats
-   (`csv`, `ndjson`) are governed by `max_rows` and request limits.
+   (`csv`, `ndjson`) are governed by `limits.max_stream_bytes` and `max_rows`.
+7. Manifest metadata retention is bounded by `limits.max_manifest_entries` and
+   `limits.manifest_ttl_seconds`.

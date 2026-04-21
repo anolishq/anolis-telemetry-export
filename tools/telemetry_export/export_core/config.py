@@ -18,6 +18,9 @@ def parse_bool(value: Any, field_name: str) -> bool:
 
 
 def parse_int(value: Any, field_name: str, *, min_value: int | None = None, max_value: int | None = None) -> int:
+    if isinstance(value, bool):
+        raise RuntimeError(f"Invalid config at {field_name}: booleans are not allowed")
+
     try:
         parsed = int(value)
     except (TypeError, ValueError) as exc:
@@ -31,7 +34,10 @@ def parse_int(value: Any, field_name: str, *, min_value: int | None = None, max_
 
 
 def parse_required_string(value: Any, field_name: str) -> str:
-    parsed = str(value).strip()
+    if not isinstance(value, str):
+        raise RuntimeError(f"Invalid config at {field_name}: must be a non-empty string")
+
+    parsed = value.strip()
     if not parsed:
         raise RuntimeError(f"Invalid config at {field_name}: must be a non-empty string")
     return parsed
@@ -56,14 +62,23 @@ def parse_allowed_list(value: Any, field_name: str) -> tuple[str, ...]:
     return tuple(parsed)
 
 
-def resolve_secret(*, env_name: str, config_value: str, field_name: str) -> str:
+def parse_optional_string(value: Any, field_name: str) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise RuntimeError(f"Invalid config at {field_name}: must be a string when set")
+    return value.strip()
+
+
+def resolve_secret(*, env_name: str, config_value: Any, field_name: str) -> str:
     """Resolve secret using env override then config fallback."""
     env_value = os.getenv(env_name, "").strip()
     if env_value:
         return env_value
 
-    if config_value:
-        return config_value
+    parsed = parse_optional_string(config_value, field_name)
+    if parsed:
+        return parsed
 
     raise RuntimeError(f"Invalid config at {field_name}: must be set (or provide env override {env_name})")
 
@@ -97,7 +112,7 @@ def load_config(path: Path) -> AppConfig:
         port=parse_int(server_raw.get("port", 8091), "server.port", min_value=1, max_value=65535),
         auth_token=resolve_secret(
             env_name="ANOLIS_EXPORT_AUTH_TOKEN",
-            config_value=str(server_raw.get("auth_token", "")).strip(),
+            config_value=server_raw.get("auth_token", ""),
             field_name="server.auth_token",
         ),
     )
@@ -108,17 +123,23 @@ def load_config(path: Path) -> AppConfig:
         bucket=parse_required_string(influx_raw.get("bucket", ""), "influxdb.bucket"),
         token=resolve_secret(
             env_name="ANOLIS_EXPORT_INFLUX_TOKEN",
-            config_value=str(influx_raw.get("token", "")).strip(),
+            config_value=influx_raw.get("token", ""),
             field_name="influxdb.token",
         ),
     )
 
+    max_response_bytes = parse_int(
+        limits_raw.get("max_response_bytes", 10_000_000),
+        "limits.max_response_bytes",
+        min_value=1,
+    )
     limits = LimitConfig(
         max_span_seconds=parse_int(limits_raw.get("max_span_seconds", 86400), "limits.max_span_seconds", min_value=1),
         max_rows=parse_int(limits_raw.get("max_rows", 50000), "limits.max_rows", min_value=1),
-        max_response_bytes=parse_int(
-            limits_raw.get("max_response_bytes", 10_000_000),
-            "limits.max_response_bytes",
+        max_response_bytes=max_response_bytes,
+        max_stream_bytes=parse_int(
+            limits_raw.get("max_stream_bytes", max_response_bytes),
+            "limits.max_stream_bytes",
             min_value=1,
         ),
         max_selector_items=parse_int(
@@ -134,6 +155,16 @@ def load_config(path: Path) -> AppConfig:
         max_request_bytes=parse_int(
             limits_raw.get("max_request_bytes", 200_000),
             "limits.max_request_bytes",
+            min_value=1,
+        ),
+        max_manifest_entries=parse_int(
+            limits_raw.get("max_manifest_entries", 10_000),
+            "limits.max_manifest_entries",
+            min_value=1,
+        ),
+        manifest_ttl_seconds=parse_int(
+            limits_raw.get("manifest_ttl_seconds", 86_400),
+            "limits.manifest_ttl_seconds",
             min_value=1,
         ),
     )

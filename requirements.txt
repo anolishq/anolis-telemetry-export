@@ -1,6 +1,6 @@
-# Convenience deps for running Python test scripts locally/CI.
+# Convenience deps for running the export service + validation tooling locally/CI.
 # Pinned with version ranges for reproducibility while allowing minor/patch updates.
-# Latest as of 2026-04-14: requests 2.32.5, pyyaml 6.0.3, jsonschema 4.22.0, ruff 0.15.0, psutil 6.1.1, protobuf 5.29.5
+# Latest as of 2026-04-21: requests 2.32.5, pyyaml 6.0.3, ruff 0.15.2, pytest 8.4.2, mypy 1.19.1
 # To update lock file: 
 # - activate clean venv
 # - run `pip install -r requirements.txt`
@@ -9,13 +9,9 @@
 # - run: `python -m pip freeze | Out-File -Encoding utf8 requirements-lock.txt`
 requests>=2.32.0,<3.0.0
 pyyaml>=6.0.0,<7.0.0
-jsonschema>=4.22.0,<5.0.0
 ruff>=0.15.0,<1.0.0
 pytest>=8.0.0,<9.0.0
 pytest-timeout>=2.0.0,<3.0.0
-psutil>=5.9.0,<7.0.0  # For soak test memory/thread monitoring
-protobuf>=5.29.5,<6.0.0  # Generated ADPP Python modules (protocol_pb2)
 mypy>=1.8.0,<2.0.0  # Static type checker
 types-requests>=2.31.0  # Type stubs for requests
-types-psutil>=5.9.0  # Type stubs for psutil
 types-PyYAML>=6.0.0  # Type stubs for yaml

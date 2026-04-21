@@ -27,6 +27,11 @@ limits:
   max_span_seconds: 86400
   max_rows: 50000
   max_response_bytes: 10000000
+  # Applies to streamed formats (`csv`, `ndjson`).
+  max_stream_bytes: 10000000
   max_selector_items: 128
   request_timeout_seconds: 15
   max_request_bytes: 200000
+  # In-memory manifest retention controls.
+  max_manifest_entries: 10000
+  manifest_ttl_seconds: 86400

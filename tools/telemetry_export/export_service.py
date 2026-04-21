@@ -15,6 +15,7 @@ import json
 import logging
 import tempfile
 import threading
+import time
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -174,17 +175,42 @@ class ExportService:
 
     def get_manifest(self, export_id: str) -> dict[str, Any] | None:
         with self._manifest_lock:
+            self._prune_manifests_locked()
             record = self._manifest_by_export_id.get(export_id)
             if record is None:
                 return None
             return dict(record["manifest"])
 
+    def _prune_manifests_locked(self) -> None:
+        now = time.time()
+        ttl_seconds = self.config.limits.manifest_ttl_seconds
+
+        expired_ids = [
+            export_id
+            for export_id, record in self._manifest_by_export_id.items()
+            if now - float(record.get("created_at_epoch", now)) > ttl_seconds
+        ]
+        for export_id in expired_ids:
+            self._manifest_by_export_id.pop(export_id, None)
+
+        overflow = len(self._manifest_by_export_id) - self.config.limits.max_manifest_entries
+        if overflow > 0:
+            oldest = sorted(
+                self._manifest_by_export_id.items(),
+                key=lambda item: float(item[1].get("created_at_epoch", now)),
+            )[:overflow]
+            for export_id, _ in oldest:
+                self._manifest_by_export_id.pop(export_id, None)
+
     def _store_manifest(self, export_id: str, manifest: dict[str, Any], manifest_hash: str) -> None:
         with self._manifest_lock:
+            self._prune_manifests_locked()
             self._manifest_by_export_id[export_id] = {
                 "manifest_hash": manifest_hash,
                 "manifest": manifest,
+                "created_at_epoch": time.time(),
             }
+            self._prune_manifests_locked()
 
     def execute_query(
         self,
@@ -319,19 +345,19 @@ class ExportService:
             suffix=suffix,
         )
         tmp_path = Path(tmp_file.name)
-        bounded_writer = (
-            _BoundedTextWriter(tmp_file, self.config.limits.max_response_bytes) if query.fmt == "json" else None
+        max_bytes = (
+            self.config.limits.max_response_bytes if query.fmt == "json" else self.config.limits.max_stream_bytes
         )
+        bounded_writer = _BoundedTextWriter(tmp_file, max_bytes)
         export_id = str(uuid.uuid4())
         row_count = 0
         content_length = 0
 
         try:
             if query.fmt == "csv":
-                csv_writer = csv.DictWriter(tmp_file, fieldnames=query.columns)
+                csv_writer = csv.DictWriter(bounded_writer, fieldnames=query.columns)
                 csv_writer.writeheader()
             elif query.fmt == "json":
-                assert bounded_writer is not None
                 bounded_writer.write('{"status":"ok","dataset":"signals","format":"json","data":[')
                 json_first = True
             else:
@@ -352,14 +378,13 @@ class ExportService:
                     if query.fmt == "csv":
                         csv_writer.writerow(normalized)
                     elif query.fmt == "json":
-                        assert bounded_writer is not None
                         if not json_first:
                             bounded_writer.write(",")
                         bounded_writer.write(json.dumps(normalized, separators=(",", ":")))
                         json_first = False
                     else:
-                        tmp_file.write(json.dumps(normalized, separators=(",", ":")))
-                        tmp_file.write("\n")
+                        bounded_writer.write(json.dumps(normalized, separators=(",", ":")))
+                        bounded_writer.write("\n")
             except UnicodeDecodeError as exc:
                 content_encoding = ""
                 headers = getattr(response, "headers", None)
@@ -392,19 +417,14 @@ class ExportService:
             self._store_manifest(export_id, manifest, manifest_hash)
 
             if query.fmt == "json":
-                assert bounded_writer is not None
                 bounded_writer.write('],"manifest":')
                 bounded_writer.write(json.dumps(manifest, separators=(",", ":")))
                 bounded_writer.write("}")
-                bounded_writer.flush()
-                content_length = bounded_writer.bytes_written
-            else:
-                tmp_file.flush()
+            bounded_writer.flush()
+            content_length = bounded_writer.bytes_written
 
             tmp_file.close()
             response.close()
-            if query.fmt != "json":
-                content_length = tmp_path.stat().st_size
 
             return SpoolResult(
                 path=tmp_path,

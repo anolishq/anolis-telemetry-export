@@ -2,24 +2,17 @@
 
 from __future__ import annotations
 
-import importlib.util
 import io
 import json
-import sys
 from pathlib import Path
 
 import pytest
 
+from tools.telemetry_export import export_service as telemetry_export_service
+
 
 def _load_module():
-    root = Path(__file__).resolve().parents[2]
-    module_path = root / "tools" / "telemetry_export" / "export_service.py"
-    spec = importlib.util.spec_from_file_location("telemetry_export_service", module_path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
-    return module
+    return telemetry_export_service
 
 
 def _test_config(module):
@@ -30,9 +23,12 @@ def _test_config(module):
             max_span_seconds=3600,
             max_rows=100,
             max_response_bytes=1_000_000,
+            max_stream_bytes=1_000_000,
             max_selector_items=16,
             request_timeout_seconds=2,
             max_request_bytes=200_000,
+            max_manifest_entries=100,
+            manifest_ttl_seconds=3600,
         ),
         authorization=module.AuthorizationConfig(
             enforce_selector_scope=False,
@@ -284,9 +280,12 @@ def test_execute_query_enforces_auth_and_row_limit(monkeypatch: pytest.MonkeyPat
             max_span_seconds=cfg.limits.max_span_seconds,
             max_rows=1,
             max_response_bytes=cfg.limits.max_response_bytes,
+            max_stream_bytes=cfg.limits.max_stream_bytes,
             max_selector_items=cfg.limits.max_selector_items,
             request_timeout_seconds=cfg.limits.request_timeout_seconds,
             max_request_bytes=cfg.limits.max_request_bytes,
+            max_manifest_entries=cfg.limits.max_manifest_entries,
+            manifest_ttl_seconds=cfg.limits.manifest_ttl_seconds,
         ),
         authorization=cfg.authorization,
     )
@@ -400,6 +399,50 @@ def test_execute_query_csv_payload_contains_manifest_and_request_trace(monkeypat
     assert payload["manifest"]["requester_id"] == "operator-a"
 
 
+def test_manifest_store_applies_ttl_and_max_entries(monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    cfg = _test_config(module)
+    bounded_cfg = module.AppConfig(
+        server=cfg.server,
+        influx=cfg.influx,
+        limits=module.LimitConfig(
+            max_span_seconds=cfg.limits.max_span_seconds,
+            max_rows=cfg.limits.max_rows,
+            max_response_bytes=cfg.limits.max_response_bytes,
+            max_stream_bytes=cfg.limits.max_stream_bytes,
+            max_selector_items=cfg.limits.max_selector_items,
+            request_timeout_seconds=cfg.limits.request_timeout_seconds,
+            max_request_bytes=cfg.limits.max_request_bytes,
+            max_manifest_entries=2,
+            manifest_ttl_seconds=10,
+        ),
+        authorization=cfg.authorization,
+    )
+    svc = module.ExportService(bounded_cfg)
+
+    now = [0.0]
+
+    def _fake_time() -> float:
+        return now[0]
+
+    monkeypatch.setattr(module.time, "time", _fake_time)
+
+    now[0] = 1.0
+    svc._store_manifest("e1", {"export_id": "e1"}, "sha256:h1")
+    now[0] = 2.0
+    svc._store_manifest("e2", {"export_id": "e2"}, "sha256:h2")
+    now[0] = 3.0
+    svc._store_manifest("e3", {"export_id": "e3"}, "sha256:h3")
+
+    assert svc.get_manifest("e1") is None
+    assert svc.get_manifest("e2") == {"export_id": "e2"}
+    assert svc.get_manifest("e3") == {"export_id": "e3"}
+
+    now[0] = 20.0
+    assert svc.get_manifest("e2") is None
+    assert svc.get_manifest("e3") is None
+
+
 def test_load_config_prefers_env_over_config_tokens(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     module = _load_module()
 
@@ -473,6 +516,72 @@ def test_load_config_rejects_invalid_server_port(tmp_path: Path):
     assert "server.port" in str(exc_info.value)
 
 
+def test_load_config_rejects_boolean_for_integer_fields(tmp_path: Path):
+    module = _load_module()
+
+    cfg_path = tmp_path / "telemetry-export-bool-port.yaml"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                "server:",
+                "  host: 127.0.0.1",
+                "  port: true",
+                "  auth_token: export-dev-token",
+                "influxdb:",
+                "  url: http://127.0.0.1:8086",
+                "  org: anolis",
+                "  bucket: anolis",
+                "  token: dev-token",
+                "limits:",
+                "  max_span_seconds: 86400",
+                "  max_rows: 50000",
+                "  max_response_bytes: 10000000",
+                "  max_selector_items: 128",
+                "  request_timeout_seconds: 15",
+                "  max_request_bytes: 200000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        module.load_config(cfg_path)
+    assert "booleans are not allowed" in str(exc_info.value)
+
+
+def test_load_config_rejects_null_for_required_strings(tmp_path: Path):
+    module = _load_module()
+
+    cfg_path = tmp_path / "telemetry-export-null-values.yaml"
+    cfg_path.write_text(
+        "\n".join(
+            [
+                "server:",
+                "  host: null",
+                "  port: 8091",
+                "  auth_token: null",
+                "influxdb:",
+                "  url: null",
+                "  org: anolis",
+                "  bucket: anolis",
+                "  token: null",
+                "limits:",
+                "  max_span_seconds: 86400",
+                "  max_rows: 50000",
+                "  max_response_bytes: 10000000",
+                "  max_selector_items: 128",
+                "  request_timeout_seconds: 15",
+                "  max_request_bytes: 200000",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        module.load_config(cfg_path)
+    assert "server.host" in str(exc_info.value)
+
+
 def test_load_config_allows_response_size_smaller_than_request_size(tmp_path: Path):
     module = _load_module()
 
@@ -503,7 +612,10 @@ def test_load_config_allows_response_size_smaller_than_request_size(tmp_path: Pa
 
     loaded = module.load_config(cfg_path)
     assert loaded.limits.max_response_bytes == 1000
+    assert loaded.limits.max_stream_bytes == 1000
     assert loaded.limits.max_request_bytes == 200000
+    assert loaded.limits.max_manifest_entries == 10000
+    assert loaded.limits.manifest_ttl_seconds == 86400
 
 
 def test_load_config_rejects_scope_enforcement_without_allowlists(tmp_path: Path):
@@ -741,7 +853,7 @@ def test_execute_spooled_query_supports_ndjson(monkeypatch: pytest.MonkeyPatch):
         result.path.unlink(missing_ok=True)
 
 
-def test_execute_spooled_query_ndjson_is_not_limited_by_max_response_bytes(
+def test_execute_spooled_query_ndjson_enforces_max_stream_bytes(
     monkeypatch: pytest.MonkeyPatch,
 ):
     module = _load_module()
@@ -753,9 +865,12 @@ def test_execute_spooled_query_ndjson_is_not_limited_by_max_response_bytes(
             max_span_seconds=base_cfg.limits.max_span_seconds,
             max_rows=base_cfg.limits.max_rows,
             max_response_bytes=64,
+            max_stream_bytes=64,
             max_selector_items=base_cfg.limits.max_selector_items,
             request_timeout_seconds=base_cfg.limits.request_timeout_seconds,
             max_request_bytes=base_cfg.limits.max_request_bytes,
+            max_manifest_entries=base_cfg.limits.max_manifest_entries,
+            manifest_ttl_seconds=base_cfg.limits.manifest_ttl_seconds,
         ),
         authorization=base_cfg.authorization,
     )
@@ -789,13 +904,67 @@ def test_execute_spooled_query_ndjson_is_not_limited_by_max_response_bytes(
         "format": "ndjson",
     }
 
-    result = svc.execute_spooled_query(request, request_id="req-ndjson-big", requester_id="operator-a")
-    try:
-        assert result.fmt == "ndjson"
-        assert result.row_count == 10
-        assert result.content_length > strict_cfg.limits.max_response_bytes
-    finally:
-        result.path.unlink(missing_ok=True)
+    with pytest.raises(module.ApiError) as exc_info:
+        svc.execute_spooled_query(request, request_id="req-ndjson-big", requester_id="operator-a")
+
+    assert exc_info.value.status == 413
+    assert exc_info.value.code == "limit_exceeded"
+
+
+def test_execute_spooled_query_csv_enforces_max_stream_bytes(monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    base_cfg = _test_config(module)
+    strict_cfg = module.AppConfig(
+        server=base_cfg.server,
+        influx=base_cfg.influx,
+        limits=module.LimitConfig(
+            max_span_seconds=base_cfg.limits.max_span_seconds,
+            max_rows=base_cfg.limits.max_rows,
+            max_response_bytes=base_cfg.limits.max_response_bytes,
+            max_stream_bytes=64,
+            max_selector_items=base_cfg.limits.max_selector_items,
+            request_timeout_seconds=base_cfg.limits.request_timeout_seconds,
+            max_request_bytes=base_cfg.limits.max_request_bytes,
+            max_manifest_entries=base_cfg.limits.max_manifest_entries,
+            manifest_ttl_seconds=base_cfg.limits.manifest_ttl_seconds,
+        ),
+        authorization=base_cfg.authorization,
+    )
+    svc = module.ExportService(strict_cfg)
+
+    class _FakeStreamResponse:
+        def __init__(self, lines: list[str]):
+            self._lines = lines
+
+        def iter_lines(self, decode_unicode: bool = True):
+            assert decode_unicode is True
+            for line in self._lines:
+                yield line
+
+        def close(self):
+            return None
+
+    fake_lines = [
+        ",result,table,_time,runtime_name,provider_id,device_id,signal_id,quality,value_double,value_int,value_uint,value_bool,value_string",
+    ]
+    for i in range(10):
+        fake_lines.append(
+            f",,0,2026-04-01T00:00:{i:02d}Z,bioreactor-telemetry,bread0,dcmt0,motor.rpm,OK,{120 + i / 10.0},,,,"
+        )
+
+    monkeypatch.setattr(module, "influx_query_csv_stream", lambda _cfg, _query: _FakeStreamResponse(fake_lines))
+
+    request = {
+        "time_range": {"start": "2026-04-01T00:00:00Z", "end": "2026-04-01T00:10:00Z"},
+        "resolution": {"mode": "raw_event"},
+        "format": "csv",
+    }
+
+    with pytest.raises(module.ApiError) as exc_info:
+        svc.execute_spooled_query(request, request_id="req-csv-big", requester_id="operator-a")
+
+    assert exc_info.value.status == 413
+    assert exc_info.value.code == "limit_exceeded"
 
 
 def test_execute_spooled_query_json_enforces_max_response_bytes(monkeypatch: pytest.MonkeyPatch):
@@ -808,9 +977,12 @@ def test_execute_spooled_query_json_enforces_max_response_bytes(monkeypatch: pyt
             max_span_seconds=base_cfg.limits.max_span_seconds,
             max_rows=base_cfg.limits.max_rows,
             max_response_bytes=128,
+            max_stream_bytes=base_cfg.limits.max_stream_bytes,
             max_selector_items=base_cfg.limits.max_selector_items,
             request_timeout_seconds=base_cfg.limits.request_timeout_seconds,
             max_request_bytes=base_cfg.limits.max_request_bytes,
+            max_manifest_entries=base_cfg.limits.max_manifest_entries,
+            manifest_ttl_seconds=base_cfg.limits.manifest_ttl_seconds,
         ),
         authorization=base_cfg.authorization,
     )

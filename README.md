@@ -33,7 +33,7 @@ For full API usage and curl examples, see `tools/telemetry_export/README.md`.
 
 Canonical schema source is `anolishq/anolis`.
 
-## Release-Pinned Sync (Phase 3 default)
+## Release-Pinned Sync (Recommended)
 
 After a tagged `anolis` release publishes telemetry schema artifacts:
 
@@ -44,6 +44,10 @@ python scripts/verify-upstream-schema.py --require-release-artifact
 
 This updates vendored schema and rewrites lock metadata in `release-artifact`
 mode with pinned checksums.
+
+Current repository lock mode is recorded in
+`contracts/upstream/anolis/telemetry-timeseries.lock.json` and may remain
+`manual-copy` until release-artifact cutover is completed.
 
 ## Manual Lock Verification
 
