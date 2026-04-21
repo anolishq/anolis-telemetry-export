@@ -251,7 +251,7 @@ def test_export_service_e2e_paths(
 
     ndjson_request = {
         "time_range": {"start": "2024-04-01T00:00:00Z", "end": "2024-04-01T01:00:00Z"},
-        "selector": {"runtime_names": ["e2e-runtime"], "provider_ids": ["bread0"]},
+        "selector": {"runtime_names": ["e2e-runtime"], "provider_ids": ["bread0"], "device_ids": ["rlht0"]},
         "resolution": {"mode": "raw_event"},
         "format": "ndjson",
     }
