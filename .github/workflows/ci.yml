@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  verify-upstream-schema:
+    name: Verify Upstream Telemetry Schema Lock
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify vendored upstream schema checksum
+        run: |
+          python3 scripts/verify-upstream-schema.py

@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source": {
+    "repo": "anolishq/anolis",
+    "path": "schemas/telemetry/telemetry-timeseries.schema.v1.json",
+    "ref": "e10a184428ca9620c553f73ae909f5fbd7b8eaef"
+  },
+  "distribution": {
+    "mode": "manual-copy",
+    "sha256": "a8328beab89ab1da27f837d18558d414b44b83badc7f52a4059571c25b801abe"
+  },
+  "synced_at_utc": "2026-04-21T01:08:18Z"
+}
