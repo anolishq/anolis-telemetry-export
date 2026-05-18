@@ -22,10 +22,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-from tools.telemetry_export.export_core.config import load_config
-from tools.telemetry_export.export_core.flux_builder import build_flux_query
-from tools.telemetry_export.export_core.influx_client import influx_query_csv, influx_query_csv_stream
-from tools.telemetry_export.export_core.models import (
+from telemetry_export.export_core.config import load_config
+from telemetry_export.export_core.flux_builder import build_flux_query
+from telemetry_export.export_core.influx_client import influx_query_csv, influx_query_csv_stream
+from telemetry_export.export_core.models import (
     ApiError,
     AppConfig,
     AuthorizationConfig,
@@ -36,7 +36,7 @@ from tools.telemetry_export.export_core.models import (
     SignalsQuery,
     SpoolResult,
 )
-from tools.telemetry_export.export_core.serialization import (
+from telemetry_export.export_core.serialization import (
     build_manifest,
     coerce_request_id,
     coerce_requester_id,
@@ -48,7 +48,7 @@ from tools.telemetry_export.export_core.serialization import (
     parse_influx_csv_rows,
     render_csv,
 )
-from tools.telemetry_export.export_core.validation import validate_query_request
+from telemetry_export.export_core.validation import validate_query_request
 
 LOGGER = logging.getLogger("telemetry_export")
 

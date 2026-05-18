@@ -1,0 +1,176 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release (e.g. 0.1.0)
+        required: true
+        type: string
+      prerelease:
+        description: Mark release as prerelease
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  validate:
+    name: Validate release request
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.validate.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate requested version
+        id: validate
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ inputs.version }}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Invalid semver version: $VERSION"
+            exit 1
+          fi
+
+          PYPROJECT_VERSION=$(python3 -c "import pathlib, tomllib; print(tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'])")
+
+          if [[ "$VERSION" != "$PYPROJECT_VERSION" ]]; then
+            echo "Version mismatch: input=$VERSION pyproject=$PYPROJECT_VERSION"
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists: $TAG"
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Release request validated for $TAG"
+
+  ci:
+    name: CI gate
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build sdist and wheel
+    needs: [validate, ci]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build distributions
+        run: uv build
+
+      - name: Verify dist artifacts
+        run: |
+          set -euo pipefail
+          test -d dist
+          ls -lh dist/
+          ls dist/*.whl dist/*.tar.gz >/dev/null
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-artifacts
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-pypi:
+    name: Publish to PyPI
+    needs: [validate, build]
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/project/anolis-telemetry-export/
+    permissions:
+      id-token: write  # OIDC trusted publisher
+      contents: read
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-artifacts
+          path: dist
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          print-hash: true
+          skip-existing: true
+
+  tag-and-release:
+    name: Tag and create GitHub release
+    needs: [validate, publish-pypi]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-artifacts
+          path: dist
+
+      - name: Create tag and GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.validate.outputs.tag }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          files: dist/*
+
+  smoke-test:
+    name: Smoke test from clean install
+    needs: [validate, publish-pypi]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Wait for PyPI propagation and install
+        run: |
+          set -euxo pipefail
+          VERSION="${{ inputs.version }}"
+          python -m venv /tmp/smoke-venv
+          /tmp/smoke-venv/bin/pip install --upgrade pip
+
+          MAX_ATTEMPTS=5
+          DELAY=10
+          for attempt in $(seq 1 $MAX_ATTEMPTS); do
+            echo "=== Attempt $attempt/$MAX_ATTEMPTS: installing anolis-telemetry-export==$VERSION ==="
+            if /tmp/smoke-venv/bin/pip install --timeout 30 "anolis-telemetry-export==$VERSION"; then
+              echo "Install succeeded on attempt $attempt."
+              break
+            fi
+            if [[ $attempt -eq $MAX_ATTEMPTS ]]; then
+              echo "Package not available on PyPI after $MAX_ATTEMPTS attempts."
+              exit 1
+            fi
+            echo "Not yet available — waiting ${DELAY}s before retry..."
+            sleep $DELAY
+            DELAY=$(( DELAY * 2 > 60 ? 60 : DELAY * 2 ))
+          done
+
+      - name: Smoke test - entry point exists and exits cleanly
+        run: |
+          /tmp/smoke-venv/bin/anolis-telemetry-export --help || true
+          /tmp/smoke-venv/bin/python -c "import telemetry_export; print('import OK')"

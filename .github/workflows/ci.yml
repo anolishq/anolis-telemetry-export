@@ -86,7 +86,7 @@ jobs:
 
       - name: Run mypy
         run: |
-          mypy tools/telemetry_export tests/integration
+          mypy telemetry_export tests/integration
 
   python-tests:
     name: Python Tests (export service unit)

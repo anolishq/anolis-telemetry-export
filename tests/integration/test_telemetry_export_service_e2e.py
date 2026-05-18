@@ -128,7 +128,7 @@ def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str,
             [
                 sys.executable,
                 "-m",
-                "tools.telemetry_export.export_service",
+                "telemetry_export.export_service",
                 "--config",
                 str(cfg_path),
             ],

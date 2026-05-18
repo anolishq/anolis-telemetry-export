@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from tools.telemetry_export import export_service as telemetry_export_service
+from telemetry_export import export_service as telemetry_export_service
 
 
 def _load_module():
