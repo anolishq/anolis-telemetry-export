@@ -3,7 +3,7 @@ charset-normalizer==3.4.4
 colorama==0.4.6
 idna==3.11
 iniconfig==2.3.0
-mypy==1.19.1
+mypy==1.20.2
 mypy_extensions==1.1.0
 packaging==26.0
 pathspec==1.0.4
