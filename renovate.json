@@ -1,8 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
-  "ignorePaths": ["requirements-lock.txt"],
+  "ignorePaths": ["requirements.txt", "requirements-lock.txt"],
   "osvVulnerabilityAlerts": true,
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": ["before 6am on monday"]
+  },
   "packageRules": [
     {
       "matchManagers": ["github-actions"],
@@ -11,12 +15,12 @@
     },
     {
       "description": "Supply-chain safety: wait 3 days for pypi packages",
-      "matchManagers": ["pip_requirements", "pep621"],
+      "matchManagers": ["pep621"],
       "minimumReleaseAge": "3 days"
     },
     {
       "description": "Group dev tooling updates (ruff, pytest, mypy, type stubs)",
-      "matchManagers": ["pip_requirements"],
+      "matchManagers": ["pep621"],
       "matchPackagePatterns": ["^ruff", "^pytest", "^mypy", "^types-"],
       "groupName": "python-dev-tooling"
     }
