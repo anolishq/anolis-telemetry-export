@@ -178,3 +178,22 @@ jobs:
           ANOLIS_EXPORT_E2E_INFLUX_BUCKET: "anolis"
           ANOLIS_EXPORT_E2E_INFLUX_TOKEN: "dev-token"
         run: uv run pytest tests/integration/test_telemetry_export_service_e2e.py -vv
+
+  ok:
+    name: ok
+    if: always()
+    needs:
+      - verify-upstream-schema
+      - python-lint
+      - python-typecheck
+      - python-tests
+      - python-export-e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate job results
+        run: |
+          echo "Job results: ${{ toJSON(needs.*.result) }}"
+      - name: Fail if any required job failed or was cancelled
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
