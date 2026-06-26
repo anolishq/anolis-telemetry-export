@@ -7,7 +7,7 @@ extracted from `anolishq/anolis`.
 
 ## What Lives Here
 
-1. Export service implementation: `tools/telemetry_export/`
+1. Export service implementation: `telemetry_export/`
 2. Service tests: `tests/integration/`
 3. Example service config: `config/bioreactor/telemetry-export.bioreactor.yaml`
 4. Upstream telemetry schema mirror + lock:
@@ -17,7 +17,7 @@ extracted from `anolishq/anolis`.
 ## Run Locally
 
 ```bash
-python -m tools.telemetry_export.export_service --config config/bioreactor/telemetry-export.bioreactor.yaml
+python -m telemetry_export.export_service --config config/bioreactor/telemetry-export.bioreactor.yaml
 ```
 
 ## Local Validation
@@ -27,7 +27,7 @@ python scripts/verify-upstream-schema.py
 python -m pytest tests/integration/test_telemetry_export_service_unit.py -vv
 ```
 
-For full API usage and curl examples, see `tools/telemetry_export/README.md`.
+For full API usage and curl examples, see `telemetry_export/README.md`.
 
 ## Upstream Schema Sync
 

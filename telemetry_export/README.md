@@ -102,7 +102,7 @@ Byte limits:
 
 ```bash
 cd /path/to/anolis-telemetry-export
-python -m tools.telemetry_export.export_service --config config/bioreactor/telemetry-export.bioreactor.yaml
+python -m telemetry_export.export_service --config config/bioreactor/telemetry-export.bioreactor.yaml
 ```
 
 ## Quick Local Export (Existing Run)
@@ -242,7 +242,7 @@ curl -sS -X POST "http://127.0.0.1:8091/v1/exports/signals:query" \
 ## Programmatic Example
 
 ```bash
-python tools/telemetry_export/examples/query_signals.py \
+python telemetry_export/examples/query_signals.py \
   --start 2026-04-01T00:00:00Z \
   --end 2026-04-01T00:30:00Z \
   --provider bread0 \
