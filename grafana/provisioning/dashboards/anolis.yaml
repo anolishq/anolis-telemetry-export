@@ -1,0 +1,14 @@
+# Grafana dashboard provider. Mount this directory at
+# /etc/grafana/provisioning/dashboards and the dashboards/ directory at the path
+# below so the anolis-run dashboard loads on startup.
+apiVersion: 1
+
+providers:
+  - name: anolis
+    orgId: 1
+    folder: Anolis
+    type: file
+    disableDeletion: false
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards/anolis

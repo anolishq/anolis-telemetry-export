@@ -1,0 +1,19 @@
+# Grafana datasource provisioning for the anolis telemetry bucket (Flux).
+# Mount this directory at /etc/grafana/provisioning/datasources.
+# Secrets come from the environment, never committed:
+#   GF_INFLUX_URL, GF_INFLUX_ORG, GF_INFLUX_TOKEN
+apiVersion: 1
+
+datasources:
+  - name: anolis-influxdb
+    uid: anolis-influxdb
+    type: influxdb
+    access: proxy
+    url: ${GF_INFLUX_URL}
+    jsonData:
+      version: Flux
+      organization: ${GF_INFLUX_ORG}
+      defaultBucket: anolis
+    secureJsonData:
+      token: ${GF_INFLUX_TOKEN}
+    isDefault: true

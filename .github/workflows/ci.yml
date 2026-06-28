@@ -116,7 +116,10 @@ jobs:
         run: uv sync --locked --extra dev
 
       - name: Run telemetry export unit tests
-        run: uv run pytest tests/integration/test_telemetry_export_service_unit.py -vv
+        run: |
+          uv run pytest \
+            tests/integration/test_telemetry_export_service_unit.py \
+            tests/integration/test_run_export_unit.py -vv
 
   python-export-e2e:
     name: Python Export E2E (Influx fixture)

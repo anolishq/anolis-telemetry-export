@@ -10,7 +10,8 @@ for `signals` exports. It intentionally does not add export routes to
 
 1. `GET /v1/health`
 2. `POST /v1/exports/signals:query`
-3. `GET /v1/exports/manifests/{export_id}`
+3. `POST /v1/exports/runs:export`
+4. `GET /v1/exports/manifests/{export_id}`
 
 ## Auth
 
@@ -97,6 +98,55 @@ Byte limits:
 
 1. `limits.max_response_bytes` applies to `format=json`.
 2. `limits.max_stream_bytes` applies to streamed formats (`csv`, `ndjson`).
+
+## Run-based export (`POST /v1/exports/runs:export`)
+
+Export the telemetry of an anolis **run** (the runtime's experiment primitive,
+epic anolishq/anolis#111) as a self-contained unit, plus Grafana annotations.
+
+The request carries a **portable `RunManifest`** — the export service never calls
+the runtime, so an export stays reproducible after the originating runtime is
+offline. Materialize a manifest once (while the runtime is reachable) with
+`scripts/fetch-run-manifest.py`, then export it any number of times.
+
+```jsonc
+{
+  "run": {
+    "schema_version": 1,
+    "run_id": "bioreactor-telemetry-01J...",
+    "started_at_epoch_ms": 1711929600000,
+    "ended_at_epoch_ms": 1711933200000,   // null => open run, exports up to "now"
+    "polling_interval_ms": 2000,
+    "runtime_names": ["bioreactor-telemetry"],
+    "tag_scope": { "provider_ids": ["bread0"], "device_ids": ["rlht0"], "signal_ids": [] },
+    "markers": [ { "sequence": 4, "category": "annotation", "type": "sample",
+                   "occurred_at_epoch_ms": 1711931400000, "payload": { "volume_ml": 5 } } ]
+  },
+  "resolution": { "mode": "raw_event" },   // optional; same shapes as signals:query
+  "format": "json",                          // optional: json | csv | ndjson
+  "seed_stable_signals": true                // optional, default true
+}
+```
+
+The response is a JSON envelope with the windowed `data`, an augmented `manifest`
+(adds a `run` provenance block, a `seed` block, and `annotations`), and a
+top-level `annotations` array.
+
+Semantics (anolishq/anolis#31):
+
+* **Window** is half-open `[started_at, ended_at)` — Flux `range`'s
+  start-inclusive / stop-exclusive bounds. The boundary is fuzzy by
+  ~`polling_interval_ms` + provider latency + scheduler jitter (telemetry is
+  timestamped when the runtime *observes* a change and emitted only on change);
+  `polling_interval_ms` is carried in `manifest.run` so a consumer can reason
+  about it. `run_id` is **never** a telemetry tag — correlation is purely this
+  time-window join over the frozen 4-tag schema.
+* **Stable signals** (no change inside the window) are **seeded** with their last
+  known value carried forward to `started_at`, so a flat signal still has a point
+  (set `seed_stable_signals: false` for change-events-only). Seeding requires a
+  non-empty `tag_scope` to bound the pre-window lookback (`max_span_seconds`).
+* **Markers** render as **Grafana annotation regions** (the run window) + point
+  annotations (markers / lifecycle events). See `grafana/README.md`.
 
 ## Run
 

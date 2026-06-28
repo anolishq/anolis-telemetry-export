@@ -13,6 +13,10 @@ extracted from `anolishq/anolis`.
 4. Upstream telemetry schema mirror + lock:
    - `contracts/upstream/anolis/telemetry-timeseries.schema.v1.json`
    - `contracts/upstream/anolis/telemetry-timeseries.lock.json`
+5. Run-based export helpers: `scripts/fetch-run-manifest.py` (materialize a
+   portable run manifest from a live runtime) and
+   `scripts/push-grafana-annotations.py`.
+6. Grafana run-annotation provisioning + dashboard: `grafana/`.
 
 ## Run Locally
 

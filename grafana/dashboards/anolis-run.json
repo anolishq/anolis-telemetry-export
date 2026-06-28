@@ -1,0 +1,48 @@
+{
+  "uid": "anolis-run",
+  "title": "Anolis — Run telemetry",
+  "tags": ["anolis"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "",
+  "time": { "from": "now-6h", "to": "now" },
+  "annotations": {
+    "list": [
+      {
+        "name": "Anolis runs",
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "iconColor": "rgba(110, 160, 255, 1)",
+        "filter": { "exclude": false, "ids": [] },
+        "tags": ["anolis-run"],
+        "type": "tags"
+      },
+      {
+        "name": "Anolis markers",
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "iconColor": "rgba(255, 152, 48, 1)",
+        "tags": ["anolis-marker"],
+        "type": "tags"
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "anolis_signal (value_double)",
+      "datasource": { "type": "influxdb", "uid": "anolis-influxdb" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "custom": { "drawStyle": "line", "showPoints": "auto" } }, "overrides": [] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "influxdb", "uid": "anolis-influxdb" },
+          "query": "from(bucket: \"anolis\")\n  |> range(start: v.timeRangeStart, stop: v.timeRangeStop)\n  |> filter(fn: (r) => r._measurement == \"anolis_signal\")\n  |> filter(fn: (r) => r._field == \"value_double\")"
+        }
+      ]
+    }
+  ]
+}
