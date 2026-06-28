@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
 import os
 import subprocess
@@ -88,17 +89,15 @@ def _assert_status(
     )
 
 
-@pytest.fixture()
-def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str, Any]], None, None]:
-    repo_root = _repo_root()
+def _make_service_config(*, port: int, max_response_bytes: int, max_stream_bytes: int) -> dict[str, Any]:
     influx_cfg = {
         "url": os.getenv("ANOLIS_EXPORT_E2E_INFLUX_URL", "http://127.0.0.1:8086"),
         "org": os.getenv("ANOLIS_EXPORT_E2E_INFLUX_ORG", "anolis"),
         "bucket": os.getenv("ANOLIS_EXPORT_E2E_INFLUX_BUCKET", "anolis"),
         "token": os.getenv("ANOLIS_EXPORT_E2E_INFLUX_TOKEN", "dev-token"),
     }
-    service_cfg = {
-        "server": {"host": "127.0.0.1", "port": 18091, "auth_token": "export-e2e-token"},
+    return {
+        "server": {"host": "127.0.0.1", "port": port, "auth_token": "export-e2e-token"},
         "influxdb": influx_cfg,
         "authorization": {
             "enforce_selector_scope": True,
@@ -110,8 +109,8 @@ def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str,
         "limits": {
             "max_span_seconds": 86400,
             "max_rows": 5000,
-            "max_response_bytes": 5000,
-            "max_stream_bytes": 5000,
+            "max_response_bytes": max_response_bytes,
+            "max_stream_bytes": max_stream_bytes,
             "max_selector_items": 128,
             "request_timeout_seconds": 15,
             "max_request_bytes": 200000,
@@ -120,6 +119,11 @@ def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str,
         },
     }
 
+
+@contextmanager
+def _serve(service_cfg: dict[str, Any]) -> Generator[tuple[subprocess.Popen[str], dict[str, Any]], None, None]:
+    repo_root = _repo_root()
+    port = service_cfg["server"]["port"]
     with tempfile.TemporaryDirectory(prefix="anolis_export_e2e_") as tmp_dir:
         cfg_path = Path(tmp_dir) / "telemetry-export.e2e.yaml"
         cfg_path.write_text(yaml.safe_dump(service_cfg, sort_keys=False), encoding="utf-8")
@@ -138,7 +142,7 @@ def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str,
             text=True,
         )
         try:
-            _wait_for_http_ok("http://127.0.0.1:18091/v1/health", timeout_seconds=30)
+            _wait_for_http_ok(f"http://127.0.0.1:{port}/v1/health", timeout_seconds=30)
             yield process, service_cfg
         except Exception as exc:
             exit_code = process.poll()
@@ -159,6 +163,23 @@ def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str,
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     process.kill()
+
+
+@pytest.fixture()
+def export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str, Any]], None, None]:
+    # A deliberately tiny response budget so the large-query path trips the limit.
+    cfg = _make_service_config(port=18091, max_response_bytes=5000, max_stream_bytes=5000)
+    with _serve(cfg) as served:
+        yield served
+
+
+@pytest.fixture()
+def run_export_service_process() -> Generator[tuple[subprocess.Popen[str], dict[str, Any]], None, None]:
+    # Run exports carry data + run provenance + annotations, so they need a
+    # realistic response budget (matching the default config).
+    cfg = _make_service_config(port=18092, max_response_bytes=200000, max_stream_bytes=200000)
+    with _serve(cfg) as served:
+        yield served
 
 
 def test_export_service_e2e_paths(
@@ -295,3 +316,105 @@ def test_export_service_e2e_paths(
         timeout=30,
     )
     _assert_status(denied_response, 403, process=_process, label="scope denied query")
+
+
+def test_run_export_e2e(
+    run_export_service_process: tuple[subprocess.Popen[str], dict[str, Any]],
+) -> None:
+    _process, service_cfg = run_export_service_process
+    influx_cfg = service_cfg["influxdb"]
+    base_url = "http://127.0.0.1:18092"
+    headers = {
+        "Authorization": "Bearer export-e2e-token",
+        "Content-Type": "application/json",
+        "X-Requester-Id": "pytest-e2e-run",
+    }
+
+    run_start = 1711929600000  # 2024-04-01T00:00:00Z
+    run_end = run_start + 60_000  # +1 minute
+    points = [
+        # A signal that changes inside the run window.
+        (
+            "anolis_signal,runtime_name=e2e-runtime,provider_id=bread0,device_id=dcmt0,signal_id=motor.rpm "
+            f'value_double=120.0,quality="OK" {run_start + 1000}'
+        ),
+        (
+            "anolis_signal,runtime_name=e2e-runtime,provider_id=bread0,device_id=dcmt0,signal_id=motor.rpm "
+            f'value_double=180.0,quality="OK" {run_start + 2000}'
+        ),
+        # A stable signal whose last change is BEFORE the window — it must be
+        # seeded (carried forward to run_start) so it appears in the export.
+        (
+            "anolis_signal,runtime_name=e2e-runtime,provider_id=bread0,device_id=rlht0,signal_id=setpoint.c "
+            f'value_double=25.0,quality="OK" {run_start - 5000}'
+        ),
+    ]
+    _write_points(influx_cfg["url"], influx_cfg["token"], influx_cfg["org"], influx_cfg["bucket"], points)
+
+    run_manifest = {
+        "schema_version": 1,
+        "run_id": "e2e-runtime-01J0RUN",
+        "started_at_epoch_ms": run_start,
+        "ended_at_epoch_ms": run_end,
+        "polling_interval_ms": 2000,
+        "runtime_names": ["e2e-runtime"],
+        "runtime_version": "0.1.24",
+        "experiment_label": "e2e-campaign",
+        "tag_scope": {"provider_ids": ["bread0"], "device_ids": [], "signal_ids": []},
+        "markers": [
+            {"sequence": 1, "category": "run_opened", "type": "", "occurred_at_epoch_ms": run_start},
+            {
+                "sequence": 2,
+                "category": "annotation",
+                "type": "sample",
+                "occurred_at_epoch_ms": run_start + 30_000,
+                "payload": {"volume_ml": 5},
+            },
+        ],
+    }
+
+    response = requests.post(
+        f"{base_url}/v1/exports/runs:export",
+        headers=headers,
+        json={"run": run_manifest, "format": "json", "seed_stable_signals": True},
+        timeout=30,
+    )
+    _assert_status(response, 200, process=_process, label="run export")
+    payload = response.json()
+
+    assert payload["status"] == "ok"
+    assert payload["dataset"] == "run"
+    assert payload["run_id"] == "e2e-runtime-01J0RUN"
+    assert payload["manifest"]["run"]["polling_interval_ms"] == 2000
+    assert payload["manifest"]["seed"]["enabled"] is True
+    assert payload["manifest"]["seed"]["seeded_rows"] >= 1
+
+    rows = payload["data"]
+    by_signal = {row["signal_id"]: row for row in rows}
+    # The in-window signal is present.
+    assert "motor.rpm" in by_signal
+    # The stable signal was seeded at the run-start boundary, carrying its
+    # pre-window value forward.
+    assert "setpoint.c" in by_signal
+    seeded = next(r for r in rows if r["signal_id"] == "setpoint.c")
+    assert seeded["timestamp"].startswith("2024-04-01T00:00:00")
+    assert float(seeded["value"]) == 25.0
+
+    # Annotations: a run-window region + a point per marker.
+    annotations = payload["annotations"]
+    region = annotations[0]
+    assert region["isRegion"] is True
+    assert region["time"] == run_start and region["timeEnd"] == run_end
+    assert any("sample" in a.get("tags", []) for a in annotations)
+
+    # Opting out of seeding drops the stable signal.
+    no_seed = requests.post(
+        f"{base_url}/v1/exports/runs:export",
+        headers=headers,
+        json={"run": run_manifest, "format": "json", "seed_stable_signals": False},
+        timeout=30,
+    )
+    _assert_status(no_seed, 200, process=_process, label="run export no-seed")
+    no_seed_signals = {row["signal_id"] for row in no_seed.json()["data"]}
+    assert "setpoint.c" not in no_seed_signals
+    assert "motor.rpm" in no_seed_signals

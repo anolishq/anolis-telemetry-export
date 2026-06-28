@@ -80,23 +80,31 @@ def build_downsample_query_from_plan(plan: QueryPlan) -> str:
     )
 
 
+_PIVOT_LINE = (
+    '  |> pivot(rowKey:["_time","runtime_name","provider_id","device_id","signal_id"], '
+    'columnKey:["_field"], valueColumn:"_value")'
+)
+_KEEP_LINE = (
+    '  |> keep(columns:["_time","runtime_name","provider_id","device_id","signal_id","quality",'
+    '"value_double","value_int","value_uint","value_bool","value_string"])'
+)
+_SORT_LINE = '  |> sort(columns:["_time","runtime_name","provider_id","device_id","signal_id"])'
+
+
 def build_raw_or_project_query_from_plan(plan: QueryPlan) -> str:
     lines = build_base_flux_lines_from_plan(plan)
+    lines.extend([_PIVOT_LINE, _KEEP_LINE, _SORT_LINE])
+    return "\n".join(lines)
 
-    lines.extend(
-        [
-            (
-                '  |> pivot(rowKey:["_time","runtime_name","provider_id","device_id","signal_id"], '
-                'columnKey:["_field"], valueColumn:"_value")'
-            ),
-            (
-                '  |> keep(columns:["_time","runtime_name","provider_id","device_id","signal_id","quality",'
-                '"value_double","value_int","value_uint","value_bool","value_string"])'
-            ),
-            '  |> sort(columns:["_time","runtime_name","provider_id","device_id","signal_id"])',
-        ]
-    )
 
+def build_seed_flux_query_from_plan(plan: QueryPlan) -> str:
+    """Last known value per series within the seed window (a pre-`run_start`
+    lookback). `last()` keeps one record per (series, field), pivoted to one row
+    per series — the carry-forward seed for a signal that is stable across the run
+    window. The plan's range must be the seed window [start - lookback, run_start)."""
+    lines = build_base_flux_lines_from_plan(plan)
+    lines.append("  |> last()")
+    lines.extend([_PIVOT_LINE, _KEEP_LINE, _SORT_LINE])
     return "\n".join(lines)
 
 
