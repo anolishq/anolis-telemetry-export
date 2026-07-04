@@ -1,8 +1,8 @@
 [project]
 name = "anolis-telemetry-export"
-version = "0.1.0"
+version = "0.1.1"
 description = "Telemetry export service for the Anolis bioreactor runtime"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "requests>=2.32.0,<3.0.0",
     "pyyaml>=6.0.0,<7.0.0",
@@ -30,7 +30,7 @@ packages = ["telemetry_export"]
 
 [tool.ruff]
 line-length = 120
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "B", "I"]
