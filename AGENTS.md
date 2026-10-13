@@ -15,7 +15,9 @@
 
 ## Tooling
 
-- `uv` + `uv.lock` (Python 3.12+). ruff = lint **and** format; mypy for types.
+- `uv` + `uv.lock` (Python 3.11+: `requires-python = ">=3.11"`, ruff
+  targets `py311`, and the CI unit-test matrix runs 3.11, 3.12 and 3.13).
+  ruff = lint **and** format; mypy for types.
 
 ## Repo-specific gotchas
 
