@@ -38,6 +38,8 @@ def _iter_influx_csv_rows_from_reader(reader: Any) -> Any:
 
     for parsed in reader:
         if not parsed:
+            # A blank line ends a table; the next one brings its own header.
+            header = None
             continue
         first = parsed[0].strip() if parsed[0] else ""
         if first.startswith("#"):
@@ -55,7 +57,10 @@ def _iter_influx_csv_rows_from_iter_lines(stream_response: Any) -> Any:
         if raw_line is None:
             continue
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            header = None
+            continue
+        if line.startswith("#"):
             continue
         parsed = next(csv.reader([line]))
         if header is None:

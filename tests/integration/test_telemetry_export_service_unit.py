@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 from pathlib import Path
@@ -1097,3 +1098,121 @@ def test_parse_influx_csv_rows_supports_multiline_values():
     assert len(rows) == 1
     assert rows[0]["signal_id"] == "note"
     assert rows[0]["value_string"] == "line1\nline2"
+
+
+def _multi_schema_csv_lines(*, annotated: bool) -> list[str]:
+    # A raw_event query spanning field types returns one table schema per
+    # pivoted column set; InfluxDB separates schemas with a blank line and
+    # starts each with its own annotations (when requested) and header.
+    tables = [
+        (
+            "double",
+            "value_double",
+            [",,0,2026-04-01T00:00:01Z,bioreactor-telemetry,ezo0,ph0,ph_value,OK,7.01"],
+        ),
+        (
+            "boolean",
+            "value_bool",
+            [
+                ",,1,2026-04-01T00:00:01Z,bioreactor-telemetry,bread0,dcmt0,estop,OK,false",
+                ",,1,2026-04-01T00:00:02Z,bioreactor-telemetry,bread0,dcmt0,estop,OK,true",
+            ],
+        ),
+        (
+            "string",
+            "value_string",
+            [",,2,2026-04-01T00:00:01Z,bioreactor-telemetry,bread0,dcmt0,mode,OK,open_loop"],
+        ),
+    ]
+    lines: list[str] = []
+    for index, (datatype, column, rows) in enumerate(tables):
+        if index > 0:
+            lines.append("")
+        if annotated:
+            lines.extend(
+                [
+                    "#group,false,false,true,true,true,true,true,false,false",
+                    f"#datatype,string,long,dateTime:RFC3339,string,string,string,string,string,{datatype}",
+                    "#default,_result,,,,,,,,",
+                ]
+            )
+        lines.append(f",result,table,_time,runtime_name,provider_id,device_id,signal_id,quality,{column}")
+        lines.extend(rows)
+    return lines
+
+
+_MULTI_SCHEMA_EXPECTED = [
+    ("ph_value", 7.01, "double"),
+    ("estop", False, "bool"),
+    ("estop", True, "bool"),
+    ("mode", "open_loop", "string"),
+]
+
+
+class _FakeIterLinesResponse:
+    def __init__(self, lines: list[str]):
+        self._lines = lines
+
+    def iter_lines(self, decode_unicode: bool = True):
+        assert decode_unicode is True
+        yield from self._lines
+
+    def close(self):
+        return None
+
+
+class _FakeRawStreamResponse:
+    def __init__(self, payload: str):
+        self.raw = io.BytesIO(payload.encode("utf-8"))
+
+
+@pytest.mark.parametrize("annotated", [False, True])
+@pytest.mark.parametrize("parser_path", ["parse_text", "raw_stream", "iter_lines"])
+def test_influx_csv_parsers_reset_header_at_each_table_schema(parser_path: str, annotated: bool):
+    module = _load_module()
+    lines = _multi_schema_csv_lines(annotated=annotated)
+    payload = "\r\n".join(lines) + "\r\n"
+
+    if parser_path == "parse_text":
+        rows = module.parse_influx_csv_rows(payload)
+    elif parser_path == "raw_stream":
+        rows = list(module.iter_influx_csv_rows(_FakeRawStreamResponse(payload)))
+    else:
+        rows = list(module.iter_influx_csv_rows(_FakeIterLinesResponse(lines)))
+
+    assert [row.get("_time") for row in rows if row.get("_time") == "_time"] == []
+    normalized = [module.normalize_row(row, ["timestamp", "signal_id", "value", "value_type"]) for row in rows]
+    assert [(row["signal_id"], row["value"], row["value_type"]) for row in normalized] == _MULTI_SCHEMA_EXPECTED
+
+
+@pytest.mark.parametrize("fmt", ["csv", "ndjson"])
+def test_execute_spooled_query_raw_event_spanning_field_types(monkeypatch: pytest.MonkeyPatch, fmt: str):
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    lines = _multi_schema_csv_lines(annotated=False)
+    monkeypatch.setattr(module, "influx_query_csv_stream", lambda _cfg, _query: _FakeIterLinesResponse(lines))
+
+    request = {
+        "time_range": {"start": "2026-04-01T00:00:00Z", "end": "2026-04-01T00:10:00Z"},
+        "resolution": {"mode": "raw_event"},
+        "format": fmt,
+    }
+
+    result = svc.execute_spooled_query(request, request_id=f"req-multi-{fmt}", requester_id="operator-a")
+    try:
+        assert result.row_count == len(_MULTI_SCHEMA_EXPECTED)
+        body = result.path.read_text(encoding="utf-8")
+        if fmt == "csv":
+            records = list(csv.reader(io.StringIO(body, newline="")))
+            header, data = records[0], records[1:]
+            assert header[0] == "timestamp"
+            assert header not in data
+            parsed = [dict(zip(header, record, strict=True)) for record in data]
+        else:
+            parsed = [json.loads(line) for line in body.splitlines() if line.strip()]
+        assert all(row["timestamp"] != "_time" for row in parsed)
+        assert [(row["signal_id"], row["value_type"]) for row in parsed] == [
+            (signal_id, value_type) for signal_id, _value, value_type in _MULTI_SCHEMA_EXPECTED
+        ]
+    finally:
+        result.path.unlink(missing_ok=True)
