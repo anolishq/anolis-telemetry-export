@@ -18,7 +18,7 @@ permissions:
 jobs:
   verify-upstream-schema:
     name: Verify Upstream Telemetry Schema Lock
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -43,7 +43,7 @@ jobs:
 
   python-lint:
     name: Python Linting (ruff)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -71,7 +71,7 @@ jobs:
 
   python-typecheck:
     name: Python Type Checking (mypy)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -97,7 +97,7 @@ jobs:
 
   python-tests:
     name: Python Tests (export service unit, py${{ matrix.python-version }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -134,7 +134,7 @@ jobs:
 
   python-export-e2e:
     name: Python Export E2E (Influx fixture)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     services:
       influxdb:
