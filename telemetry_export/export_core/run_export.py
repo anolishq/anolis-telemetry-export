@@ -17,9 +17,9 @@ Decisions (anolishq/anolis#31, matching the RFC):
   latency + scheduler jitter; ``polling_interval_ms`` is carried in the manifest
   so a consumer can reason about it. ``run_id`` is **never** a telemetry tag —
   correlation is the time-window join over the frozen 4-tag schema.
-* **Stable signals** (no value change inside the window) are **seeded** with
-  their last known value carried forward to ``run_start`` so a flat signal still
-  has a point in the export (opt-out via ``seed_stable_signals: false``).
+* **Every scoped series is seeded** with its last known value carried forward
+  to ``run_start``, so a flat signal still has a point in the export, unless it
+  has a real point at ``run_start`` (opt-out via ``seed_stable_signals: false``).
 * **Markers** render as **Grafana annotation regions** (the run window) +
   point annotations (operator markers / lifecycle events).
 """
