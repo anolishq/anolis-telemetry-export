@@ -137,3 +137,63 @@ def test_run_provenance_carries_polling_interval_for_boundary_fuzz():
     assert prov["polling_interval_ms"] == 2000
     assert prov["is_open"] is False
     assert prov["tag_scope"]["provider_ids"] == ["bread0"]
+
+
+def _load_fetch_run_manifest():
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[2] / "scripts" / "fetch-run-manifest.py"
+    spec = importlib.util.spec_from_file_location("fetch_run_manifest", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _stub_runtime(monkeypatch: pytest.MonkeyPatch, module, run_id: str) -> None:
+    # Shaped like the runtime's responses: RuntimeStatusResponse and the Run
+    # object carry no runtime name (anolishq/anolis-telemetry-export#101).
+    responses = {
+        "/v0/runtime/status": {
+            "status": {"code": "OK", "message": "ok"},
+            "version": "0.1.55",
+            "mode": "IDLE",
+            "uptime_seconds": 12,
+            "polling_interval_ms": 500,
+            "providers": [],
+            "device_count": 0,
+        },
+        f"/v0/runs/{run_id}": {
+            "run": {
+                "run_id": run_id,
+                "started_at_epoch_ms": 1_711_929_600_000,
+                "ended_at_epoch_ms": 1_711_933_200_000,
+                "polling_interval_ms": 500,
+                "runtime_version": "0.1.55",
+                "experiment_label": "",
+                "tag_scope": {"provider_ids": ["sim0"], "device_ids": [], "signal_ids": []},
+            }
+        },
+        f"/v0/runs/{run_id}/events": {"events": []},
+    }
+    monkeypatch.setattr(module, "_get_json", lambda _base, path, _token, **_kw: responses[path])
+
+
+def test_fetch_run_manifest_scopes_to_the_runtime_named_in_the_run_id(monkeypatch: pytest.MonkeyPatch):
+    module = _load_fetch_run_manifest()
+    run_id = "bench-a-01J9ZQ4Y7K3M8N2P5R6S7T8V9W"
+    _stub_runtime(monkeypatch, module, run_id)
+
+    manifest = module.build_manifest("http://127.0.0.1:8080", run_id, None)
+
+    assert manifest["runtime_names"] == ["bench-a"]
+
+
+def test_fetch_run_manifest_refuses_an_unscoped_manifest(monkeypatch: pytest.MonkeyPatch):
+    module = _load_fetch_run_manifest()
+    run_id = "not-a-minted-run-id"
+    _stub_runtime(monkeypatch, module, run_id)
+
+    with pytest.raises(RuntimeError, match="--runtime-name"):
+        module.build_manifest("http://127.0.0.1:8080", run_id, None)
