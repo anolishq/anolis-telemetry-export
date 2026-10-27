@@ -94,6 +94,12 @@ SUFFIX_BY_FORMAT = {
     "ndjson": ".ndjson",
 }
 
+_RUN_EXPORT_SERIES_COLUMNS = ("runtime_name", "provider_id", "device_id", "signal_id")
+
+
+def _run_export_series_key(row: dict[str, str]) -> tuple[str, ...]:
+    return tuple(row.get(column, "") for column in _RUN_EXPORT_SERIES_COLUMNS)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Anolis telemetry export MVP service")
@@ -320,9 +326,9 @@ class ExportService:
         requester_id: str = "anonymous",
     ) -> tuple[int, dict[str, Any]]:
         """Export a run's telemetry from a portable RunManifest: derive the
-        half-open [run_start, run_end) window + scope, seed stable signals with
-        their last value carried forward to run_start, and attach Grafana run
-        annotations."""
+        half-open [run_start, run_end) window + scope, seed signals with no
+        in-window observations using their last value carried forward to
+        run_start, and attach Grafana run annotations."""
         if not isinstance(request_body, dict):
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "request body must be a JSON object")
 
@@ -365,6 +371,8 @@ class ExportService:
             )
             seed_plan = build_query_plan(seed_query, self.config.influx.bucket)
             seed_rows = parse_influx_csv_rows(influx_query_csv(self.config, build_seed_flux_query_from_plan(seed_plan)))
+            window_series = {_run_export_series_key(row) for row in raw_rows}
+            seed_rows = [row for row in seed_rows if _run_export_series_key(row) not in window_series]
             run_start_iso = query.start.isoformat().replace("+00:00", "Z")
             for row in seed_rows:
                 row["_time"] = run_start_iso  # carry forward to the window boundary

@@ -141,10 +141,13 @@ Semantics (anolishq/anolis#31):
   `polling_interval_ms` is carried in `manifest.run` so a consumer can reason
   about it. `run_id` is **never** a telemetry tag — correlation is purely this
   time-window join over the frozen 4-tag schema.
-* **Stable signals** (no change inside the window) are **seeded** with their last
-  known value carried forward to `started_at`, so a flat signal still has a point
-  (set `seed_stable_signals: false` for change-events-only). Seeding requires a
-  non-empty `tag_scope` to bound the pre-window lookback (`max_span_seconds`).
+* **Stable signals** with no observations inside the window are **seeded** with
+  their last known value carried forward to `started_at`, so a flat signal still
+  has a point. A signal with any in-window observation is not seeded, which avoids
+  duplicate boundary rows; `manifest.seed.seeded_rows` counts seeds actually
+  emitted. Set `seed_stable_signals: false` for change-events-only. Seeding
+  requires a non-empty `tag_scope` to bound the pre-window lookback
+  (`max_span_seconds`).
 * **Markers** render as **Grafana annotation regions** (the run window) + point
   annotations (markers / lifecycle events). See `grafana/README.md`.
 

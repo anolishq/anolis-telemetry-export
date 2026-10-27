@@ -51,6 +51,122 @@ def _sample_csv_rows() -> str:
     )
 
 
+def test_run_export_seeds_only_series_without_window_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    run_start = 1_711_929_600_000  # 2024-04-01T00:00:00Z
+    headers = ",".join(
+        (
+            "",
+            "result",
+            "table",
+            "_time",
+            "runtime_name",
+            "provider_id",
+            "device_id",
+            "signal_id",
+            "quality",
+            "value_double",
+            "value_int",
+            "value_uint",
+            "value_bool",
+            "value_string",
+        )
+    )
+    window_csv = "\n".join(
+        [
+            headers,
+            ",,0,2024-04-01T00:00:00Z,bioreactor-telemetry,bread0,rlht0,tc1_temp,OK,21.0,,,,",
+            ",,0,2024-04-01T00:10:00Z,bioreactor-telemetry,bread0,rlht0,tc1_temp,OK,22.0,,,,",
+            ",,0,2024-04-01T00:20:00Z,bioreactor-telemetry,bread0,rlht0,tc2_temp,OK,31.0,,,,",
+            ",,0,2024-04-01T00:30:00Z,bioreactor-telemetry,bread0,rlht0,tc2_temp,OK,32.0,,,,",
+        ]
+    )
+    seed_csv = "\n".join(
+        [
+            headers,
+            ",,0,2024-03-31T23:59:50Z,bioreactor-telemetry,bread0,rlht0,tc1_temp,OK,20.0,,,,",
+            ",,0,2024-03-31T23:59:55Z,bioreactor-telemetry,bread0,rlht0,tc2_temp,OK,30.0,,,,",
+            ",,0,2024-03-31T23:59:45Z,bioreactor-telemetry,bread0,rlht0,setpoint.c,OK,25.0,,,,",
+        ]
+    )
+    responses = iter((window_csv, seed_csv))
+    monkeypatch.setattr(module, "influx_query_csv", lambda _cfg, _query: next(responses))
+
+    status, payload = svc.execute_run_export(
+        {
+            "run": {
+                "schema_version": 1,
+                "run_id": "bioreactor-telemetry-01ABC",
+                "started_at_epoch_ms": run_start,
+                "ended_at_epoch_ms": run_start + 3_600_000,
+                "polling_interval_ms": 2000,
+                "runtime_names": ["bioreactor-telemetry"],
+                "runtime_version": "0.1.24",
+                "experiment_label": "campaign-A",
+                "tag_scope": {"provider_ids": ["bread0"], "device_ids": ["rlht0"], "signal_ids": []},
+                "markers": [],
+            },
+            "format": "json",
+        }
+    )
+
+    assert status == 200
+    assert payload["manifest"]["seed"] == {"enabled": True, "seeded_rows": 1, "lookback_seconds": 3600}
+    assert payload["data"] == [
+        {
+            "timestamp": "2024-04-01T00:00:00Z",
+            "runtime_name": "bioreactor-telemetry",
+            "provider_id": "bread0",
+            "device_id": "rlht0",
+            "signal_id": "setpoint.c",
+            "value": 25.0,
+            "value_type": "double",
+            "quality": "OK",
+        },
+        {
+            "timestamp": "2024-04-01T00:00:00Z",
+            "runtime_name": "bioreactor-telemetry",
+            "provider_id": "bread0",
+            "device_id": "rlht0",
+            "signal_id": "tc1_temp",
+            "value": 21.0,
+            "value_type": "double",
+            "quality": "OK",
+        },
+        {
+            "timestamp": "2024-04-01T00:10:00Z",
+            "runtime_name": "bioreactor-telemetry",
+            "provider_id": "bread0",
+            "device_id": "rlht0",
+            "signal_id": "tc1_temp",
+            "value": 22.0,
+            "value_type": "double",
+            "quality": "OK",
+        },
+        {
+            "timestamp": "2024-04-01T00:20:00Z",
+            "runtime_name": "bioreactor-telemetry",
+            "provider_id": "bread0",
+            "device_id": "rlht0",
+            "signal_id": "tc2_temp",
+            "value": 31.0,
+            "value_type": "double",
+            "quality": "OK",
+        },
+        {
+            "timestamp": "2024-04-01T00:30:00Z",
+            "runtime_name": "bioreactor-telemetry",
+            "provider_id": "bread0",
+            "device_id": "rlht0",
+            "signal_id": "tc2_temp",
+            "value": 32.0,
+            "value_type": "double",
+            "quality": "OK",
+        },
+    ]
+
+
 def test_validate_query_request_accepts_raw_event():
     module = _load_module()
     cfg = _test_config(module)
