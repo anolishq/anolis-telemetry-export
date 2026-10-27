@@ -102,16 +102,17 @@ def build_seed_flux_query_from_plan(plan: QueryPlan) -> str:
     lookback): the carry-forward seed for each scoped series at run_start.
     Pivoting first makes each row one written point, so value and quality come
     from the same point; `last()` per field would take each field's own last
-    write and pivot them into separate rows (#100). A last point with no value
-    field keeps its quality and a null value. The plan's range must be the seed
-    window [start - lookback, run_start)."""
+    write and pivot them into separate rows (#100). `tail(n: 1)` after the sort
+    keeps that point as written: a last point with no value field keeps its
+    quality and a null value. The plan's range must be the seed window
+    [start - lookback, run_start)."""
     lines = build_base_flux_lines_from_plan(plan)
     lines.extend(
         [
             _PIVOT_LINE,
             '  |> group(columns:["runtime_name","provider_id","device_id","signal_id"])',
             '  |> sort(columns:["_time"])',
-            '  |> last(column:"_time")',
+            "  |> tail(n: 1)",
             _KEEP_LINE,
             _SORT_LINE,
         ]
