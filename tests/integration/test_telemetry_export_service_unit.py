@@ -1250,9 +1250,7 @@ def test_run_export_seeds_only_series_without_a_point_at_started_at(monkeypatch:
             _csv_point("2024-04-01T00:20:00Z", "tc2_temp", 31.0),
         ]
     )
-    monkeypatch.setattr(
-        module, "influx_query_csv", lambda _cfg, query: seed_csv if "|> last()" in query else window_csv
-    )
+    monkeypatch.setattr(module, "influx_query_csv", lambda _cfg, query: seed_csv if "|> last(" in query else window_csv)
 
     status, body = svc.execute_run_export(
         {

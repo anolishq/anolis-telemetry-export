@@ -108,7 +108,7 @@ def test_seed_flux_query_is_last_before_window_over_scope():
         original_request={},
     )
     flux = build_seed_flux_query_from_plan(build_query_plan(seed_query, "anolis"))
-    assert "|> last()" in flux
+    assert '|> last(column:"_time")' in flux
     assert 'r._measurement == "anolis_signal"' in flux
     assert 'r.provider_id == "bread0"' in flux
     assert 'stop: time(v: "2024-04-01T00:00:00Z")' in flux  # seed window stops at run_start
