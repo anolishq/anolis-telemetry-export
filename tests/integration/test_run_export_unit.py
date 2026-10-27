@@ -137,3 +137,27 @@ def test_run_provenance_carries_polling_interval_for_boundary_fuzz():
     assert prov["polling_interval_ms"] == 2000
     assert prov["is_open"] is False
     assert prov["tag_scope"]["provider_ids"] == ["bread0"]
+
+
+def test_provisioned_dashboard_annotations_reach_every_panel():
+    # anolishq/anolis-telemetry-export#103: Grafana reads any annotation
+    # `filter` as a panel filter; with exclude false it shows the annotation
+    # only on the panels in `ids`, so an empty list hides it everywhere.
+    # "All panels" is no `filter` key at all.
+    import json
+    from pathlib import Path
+
+    dashboards = sorted((Path(__file__).resolve().parents[2] / "grafana" / "dashboards").glob("*.json"))
+    assert dashboards
+    for path in dashboards:
+        dashboard = json.loads(path.read_text(encoding="utf-8"))
+        panel_ids = {panel["id"] for panel in dashboard.get("panels", [])}
+        for annotation in dashboard.get("annotations", {}).get("list", []):
+            panel_filter = annotation.get("filter")
+            if panel_filter is None:
+                continue
+            shown_on = set(panel_filter.get("ids", []))
+            if not panel_filter.get("exclude", False):
+                assert shown_on & panel_ids, f"{path.name}: {annotation['name']!r} is shown on no panel"
+            else:
+                assert panel_ids - shown_on, f"{path.name}: {annotation['name']!r} is hidden from every panel"
