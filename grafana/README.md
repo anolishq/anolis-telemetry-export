@@ -31,8 +31,8 @@ Grafana dashboard.
    ```
 
 The provisioned dashboard (`dashboards/anolis-run.json`) has two annotation
-queries — `anolis-run` (regions) and `anolis-marker` (points) — so the pushed
-annotations appear automatically.
+queries — `anolis-run` (regions) and `anolis-marker` (points) — enabled by
+default and filtering on the tags the export sets on each annotation.
 
 ## Provisioning
 
