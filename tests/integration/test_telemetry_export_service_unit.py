@@ -1216,3 +1216,66 @@ def test_execute_spooled_query_raw_event_spanning_field_types(monkeypatch: pytes
         ]
     finally:
         result.path.unlink(missing_ok=True)
+
+
+_CSV_HEADER = (
+    ",result,table,_time,runtime_name,provider_id,device_id,signal_id,quality,"
+    "value_double,value_int,value_uint,value_bool,value_string"
+)
+
+
+def _csv_point(time: str, signal_id: str, value: float) -> str:
+    return f",,0,{time},bioreactor-telemetry,bread0,rlht0,{signal_id},OK,{value},,,,"
+
+
+def test_run_export_seeds_only_series_without_a_point_at_started_at(monkeypatch: pytest.MonkeyPatch):
+    # anolishq/anolis-telemetry-export#95: tc1_temp has a real point exactly at
+    # started_at, so its pre-run value must not be seeded there as well.
+    # tc2_temp changes mid-window and tc3_temp not at all; both are seeded.
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    seed_csv = "\n".join(
+        [
+            _CSV_HEADER,
+            _csv_point("2024-03-31T23:59:50Z", "tc1_temp", 20.0),
+            _csv_point("2024-03-31T23:59:55Z", "tc2_temp", 30.0),
+            _csv_point("2024-03-31T23:30:00Z", "tc3_temp", 40.0),
+        ]
+    )
+    window_csv = "\n".join(
+        [
+            _CSV_HEADER,
+            _csv_point("2024-04-01T00:00:00Z", "tc1_temp", 21.0),
+            _csv_point("2024-04-01T00:10:00Z", "tc1_temp", 22.0),
+            _csv_point("2024-04-01T00:20:00Z", "tc2_temp", 31.0),
+        ]
+    )
+    monkeypatch.setattr(
+        module, "influx_query_csv", lambda _cfg, query: seed_csv if "|> last()" in query else window_csv
+    )
+
+    status, body = svc.execute_run_export(
+        {
+            "run": {
+                "schema_version": 1,
+                "run_id": "bioreactor-telemetry-95",
+                "started_at_epoch_ms": 1_711_929_600_000,  # 2024-04-01T00:00:00Z
+                "ended_at_epoch_ms": 1_711_933_200_000,
+                "polling_interval_ms": 2000,
+                "runtime_names": ["bioreactor-telemetry"],
+                "tag_scope": {"provider_ids": ["bread0"], "device_ids": ["rlht0"], "signal_ids": []},
+                "markers": [],
+            }
+        }
+    )
+
+    assert status == 200
+    assert [(row["timestamp"], row["signal_id"], row["value"]) for row in body["data"]] == [
+        ("2024-04-01T00:00:00Z", "tc2_temp", 30.0),
+        ("2024-04-01T00:00:00Z", "tc3_temp", 40.0),
+        ("2024-04-01T00:00:00Z", "tc1_temp", 21.0),
+        ("2024-04-01T00:10:00Z", "tc1_temp", 22.0),
+        ("2024-04-01T00:20:00Z", "tc2_temp", 31.0),
+    ]
+    assert body["manifest"]["seed"] == {"enabled": True, "seeded_rows": 2, "lookback_seconds": 3600}
+    assert body["manifest"]["row_count"] == 5
