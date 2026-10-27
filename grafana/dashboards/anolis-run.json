@@ -14,7 +14,6 @@
         "datasource": { "type": "grafana", "uid": "-- Grafana --" },
         "enable": true,
         "iconColor": "rgba(110, 160, 255, 1)",
-        "filter": { "exclude": false, "ids": [] },
         "tags": ["anolis-run"],
         "type": "tags"
       },
