@@ -50,8 +50,8 @@ This updates vendored schema and rewrites lock metadata in `release-artifact`
 mode with pinned checksums.
 
 Current repository lock mode is recorded in
-`contracts/upstream/anolis/telemetry-timeseries.lock.json` and may remain
-`manual-copy` until release-artifact cutover is completed.
+`contracts/upstream/anolis/telemetry-timeseries.lock.json`, which is in
+`release-artifact` mode.
 
 ## Manual Lock Verification
 
