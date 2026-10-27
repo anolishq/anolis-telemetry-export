@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -56,7 +56,7 @@ from telemetry_export.export_core.serialization import (
     parse_influx_csv_rows,
     render_csv,
 )
-from telemetry_export.export_core.validation import validate_query_request
+from telemetry_export.export_core.validation import parse_rfc3339_utc, validate_query_request
 
 LOGGER = logging.getLogger("telemetry_export")
 
@@ -93,6 +93,18 @@ SUFFIX_BY_FORMAT = {
     "json": ".json",
     "ndjson": ".ndjson",
 }
+
+
+def _series_key(row: dict[str, str]) -> tuple[str, str, str, str]:
+    return (row.get("runtime_name", ""), row.get("provider_id", ""), row.get("device_id", ""), row.get("signal_id", ""))
+
+
+def _is_at(timestamp: str, instant: datetime) -> bool:
+    """Whether an InfluxDB `_time` (RFC3339, trailing zeros trimmed) is `instant`."""
+    try:
+        return parse_rfc3339_utc(timestamp, "_time") == instant
+    except ApiError:
+        return False
 
 
 def parse_args() -> argparse.Namespace:
@@ -320,8 +332,8 @@ class ExportService:
         requester_id: str = "anonymous",
     ) -> tuple[int, dict[str, Any]]:
         """Export a run's telemetry from a portable RunManifest: derive the
-        half-open [run_start, run_end) window + scope, seed stable signals with
-        their last value carried forward to run_start, and attach Grafana run
+        half-open [run_start, run_end) window + scope, seed each scoped series
+        with its last value carried forward to run_start, and attach Grafana run
         annotations."""
         if not isinstance(request_body, dict):
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "request body must be a JSON object")
@@ -344,10 +356,11 @@ class ExportService:
         flux_query = build_flux_query(query, self.config.influx.bucket)
         raw_rows = parse_influx_csv_rows(influx_query_csv(self.config, flux_query))
 
-        # Seed stable signals: carry the last value before run_start forward to the
-        # window boundary so a signal that never changes during the run still has a
-        # point. Bounded by max_span_seconds and only when the run is scoped (an
-        # unscoped seed would scan every series in the bucket).
+        # Seed: carry each scoped series' last value before run_start forward to
+        # the window boundary, so a signal that never changes during the run still
+        # has a point and one that changes later has its value from the start.
+        # Bounded by max_span_seconds and only when the run is scoped (an unscoped
+        # seed would scan every series in the bucket).
         seed_info: dict[str, Any] = {"enabled": bool(seed_stable_signals)}
         if seed_stable_signals and run.has_scope:
             lookback_seconds = self.config.limits.max_span_seconds
@@ -365,6 +378,10 @@ class ExportService:
             )
             seed_plan = build_query_plan(seed_query, self.config.influx.bucket)
             seed_rows = parse_influx_csv_rows(influx_query_csv(self.config, build_seed_flux_query_from_plan(seed_plan)))
+            # A series with a real point at run_start needs no seed there: two rows
+            # for one series at one timestamp would conflict (#95).
+            measured_at_start = {_series_key(row) for row in raw_rows if _is_at(row.get("_time", ""), query.start)}
+            seed_rows = [row for row in seed_rows if _series_key(row) not in measured_at_start]
             run_start_iso = query.start.isoformat().replace("+00:00", "Z")
             for row in seed_rows:
                 row["_time"] = run_start_iso  # carry forward to the window boundary
