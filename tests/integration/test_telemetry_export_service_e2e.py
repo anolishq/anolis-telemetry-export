@@ -418,3 +418,60 @@ def test_run_export_e2e(
     no_seed_signals = {row["signal_id"] for row in no_seed.json()["data"]}
     assert "setpoint.c" not in no_seed_signals
     assert "motor.rpm" in no_seed_signals
+
+
+def test_run_export_seeds_one_row_per_series_from_its_last_point(
+    run_export_service_process: tuple[subprocess.Popen[str], dict[str, Any]],
+) -> None:
+    # anolishq/anolis-telemetry-export#100: a series whose last value field and
+    # last quality were written at different times must still seed one row, with
+    # value and quality from its last point before run_start.
+    _process, service_cfg = run_export_service_process
+    influx_cfg = service_cfg["influxdb"]
+    base_url = "http://127.0.0.1:18092"
+    headers = {
+        "Authorization": "Bearer export-e2e-token",
+        "Content-Type": "application/json",
+        "X-Requester-Id": "pytest-e2e-run-100",
+    }
+
+    run_start = 1712016000000  # 2024-04-02T00:00:00Z
+    series = "anolis_signal,runtime_name=e2e-runtime,provider_id=bread0,device_id=rlht100"
+    points = [
+        # The last point has quality and no value, as the runtime writes a NaN
+        # or Inf reading.
+        f'{series},signal_id=tc1_temp value_double=21.5,quality="OK" {run_start - 20_000}',
+        f'{series},signal_id=tc1_temp quality="UNAVAILABLE" {run_start - 10_000}',
+        # The value type changed inside the lookback: int, then double.
+        f'{series},signal_id=mode value_int=1i,quality="OK" {run_start - 20_000}',
+        f'{series},signal_id=mode value_double=2.5,quality="OK" {run_start - 10_000}',
+    ]
+    _write_points(influx_cfg["url"], influx_cfg["token"], influx_cfg["org"], influx_cfg["bucket"], points)
+
+    run_manifest = {
+        "schema_version": 1,
+        "run_id": "e2e-runtime-01J0RUN100",
+        "started_at_epoch_ms": run_start,
+        "ended_at_epoch_ms": run_start + 60_000,
+        "polling_interval_ms": 2000,
+        "runtime_names": ["e2e-runtime"],
+        "tag_scope": {"provider_ids": ["bread0"], "device_ids": ["rlht100"], "signal_ids": []},
+        "markers": [],
+    }
+    response = requests.post(
+        f"{base_url}/v1/exports/runs:export",
+        headers=headers,
+        json={"run": run_manifest, "format": "json", "seed_stable_signals": True},
+        timeout=30,
+    )
+    _assert_status(response, 200, process=_process, label="run export split seed")
+    payload = response.json()
+
+    rows = sorted(
+        (row["timestamp"], row["signal_id"], row["quality"], row["value"], row["value_type"]) for row in payload["data"]
+    )
+    assert rows == [
+        ("2024-04-02T00:00:00Z", "mode", "OK", 2.5, "double"),
+        ("2024-04-02T00:00:00Z", "tc1_temp", "UNAVAILABLE", None, "unknown"),
+    ]
+    assert payload["manifest"]["seed"]["seeded_rows"] == 2
