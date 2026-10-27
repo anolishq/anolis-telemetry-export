@@ -114,7 +114,10 @@ epic anolishq/anolis#111) as a self-contained unit, plus Grafana annotations.
 The request carries a **portable `RunManifest`** — the export service never calls
 the runtime, so an export stays reproducible after the originating runtime is
 offline. Materialize a manifest once (while the runtime is reachable) with
-`scripts/fetch-run-manifest.py`, then export it any number of times.
+`scripts/fetch-run-manifest.py`, then export it any number of times. The
+script scopes the manifest to the runtime named by the `run_id`'s prefix
+(`<runtime.name>-<ULID>`). For a `run_id` without that shape, pass
+`--runtime-name`, or the script refuses rather than write an unscoped manifest.
 
 ```jsonc
 {
