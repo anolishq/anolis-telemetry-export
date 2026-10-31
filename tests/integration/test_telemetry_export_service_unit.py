@@ -865,7 +865,7 @@ def test_execute_spooled_query_ndjson_enforces_max_stream_bytes(
         limits=module.LimitConfig(
             max_span_seconds=base_cfg.limits.max_span_seconds,
             max_rows=base_cfg.limits.max_rows,
-            max_response_bytes=64,
+            max_response_bytes=base_cfg.limits.max_response_bytes,
             max_stream_bytes=64,
             max_selector_items=base_cfg.limits.max_selector_items,
             request_timeout_seconds=base_cfg.limits.request_timeout_seconds,
