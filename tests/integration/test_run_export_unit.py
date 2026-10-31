@@ -64,6 +64,22 @@ def test_parse_run_manifest_rejects_missing_run_id_and_bad_window():
         parse_run_manifest("not-an-object")
 
 
+@pytest.mark.parametrize("version", [2, 99, 0, -5])
+def test_parse_run_manifest_rejects_an_unsupported_schema_version(version):
+    # anolishq/anolis-telemetry-export#96: any integer was read with v1 rules.
+    with pytest.raises(ApiError) as error:
+        parse_run_manifest(_manifest_body(schema_version=version))
+    assert (error.value.status, error.value.code) == (400, "invalid_argument")
+    assert "run.schema_version" in error.value.message
+    assert "supported: 1" in error.value.message
+
+
+def test_parse_run_manifest_defaults_an_omitted_schema_version_to_1():
+    body = _manifest_body()
+    del body["schema_version"]
+    assert parse_run_manifest(body).schema_version == 1
+
+
 def test_open_run_has_no_scope_flag_and_null_end():
     run = parse_run_manifest(
         _manifest_body(ended_at_epoch_ms=None, tag_scope={"provider_ids": [], "device_ids": [], "signal_ids": []})
@@ -137,6 +153,7 @@ def test_run_provenance_carries_polling_interval_for_boundary_fuzz():
     assert prov["polling_interval_ms"] == 2000
     assert prov["is_open"] is False
     assert prov["tag_scope"]["provider_ids"] == ["bread0"]
+    assert prov["schema_version"] == 1
 
 
 def _load_fetch_run_manifest():
