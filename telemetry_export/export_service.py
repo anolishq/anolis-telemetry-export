@@ -165,7 +165,9 @@ class ExportService:
             raise ApiError(HTTPStatus.UNAUTHORIZED, "unauthenticated", "Authorization: Bearer <token> is required")
 
         supplied = token.strip()
-        if not supplied or not hmac.compare_digest(supplied, self.config.server.auth_token):
+        # As bytes: compare_digest raises TypeError on a non-ASCII str, which
+        # would answer 500 for a malformed token.
+        if not supplied or not hmac.compare_digest(supplied.encode(), self.config.server.auth_token.encode()):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "unauthenticated", "invalid bearer token")
 
     def enforce_scope(self, query: SignalsQuery) -> None:

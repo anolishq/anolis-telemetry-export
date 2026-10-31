@@ -1386,7 +1386,17 @@ def test_authorize_matches_the_scheme_in_any_case(scheme):
 
 @pytest.mark.parametrize(
     "header",
-    [None, "", "Bearer", "Bearer ", "Basic export-dev-token", "Bearer\texport-dev-token", "Bearerexport-dev-token"],
+    [
+        None,
+        "",
+        "Bearer",
+        "Bearer ",
+        "Basic export-dev-token",
+        "Bearer\texport-dev-token",
+        "Bearerexport-dev-token",
+        "Bearer \xe9",
+        "Bearer export-dev-token\xe9",
+    ],
 )
 def test_authorize_still_refuses_a_missing_or_malformed_header(header):
     module = _load_module()
@@ -1406,7 +1416,7 @@ def _serve(module):
     return server
 
 
-@pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Token export-dev-token"])
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Token export-dev-token", "Bearer \xe9"])
 def test_manifest_route_answers_401_without_a_valid_token(authorization):
     # anolishq/anolis-telemetry-export#104: do_GET raised ApiError outside a
     # handler, so the server closed the connection instead of answering.
