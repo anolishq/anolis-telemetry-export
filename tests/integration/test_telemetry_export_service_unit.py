@@ -1279,3 +1279,94 @@ def test_run_export_seeds_only_series_without_a_point_at_started_at(monkeypatch:
     ]
     assert body["manifest"]["seed"] == {"enabled": True, "seeded_rows": 2, "lookback_seconds": 3600}
     assert body["manifest"]["row_count"] == 5
+
+
+def _run_body(**extra):
+    return {
+        "run": {
+            "schema_version": 1,
+            "run_id": "bioreactor-telemetry-97",
+            "started_at_epoch_ms": 1_711_929_600_000,
+            "ended_at_epoch_ms": 1_711_933_200_000,
+            "polling_interval_ms": 2000,
+            "runtime_names": ["bioreactor-telemetry"],
+            "tag_scope": {"provider_ids": ["bread0"], "device_ids": ["rlht0"], "signal_ids": []},
+            "markers": [],
+        },
+        **extra,
+    }
+
+
+def test_run_export_rejects_timezone_as_signals_query_does(monkeypatch: pytest.MonkeyPatch):
+    # anolishq/anolis-telemetry-export#97: runs:export returned 200 with UTC
+    # timestamps for a request carrying timezone.
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    queries: list[str] = []
+
+    def query_csv(_cfg, query):
+        queries.append(query)
+        return _CSV_HEADER
+
+    monkeypatch.setattr(module, "influx_query_csv", query_csv)
+
+    with pytest.raises(module.ApiError) as signals_error:
+        module.validate_query_request(
+            {
+                "time_range": {"start": "2024-04-01T00:00:00Z", "end": "2024-04-01T01:00:00Z"},
+                "resolution": {"mode": "raw_event"},
+                "timezone": "America/New_York",
+            },
+            svc.config.limits,
+        )
+    with pytest.raises(module.ApiError) as run_error:
+        svc.execute_run_export(_run_body(timezone="America/New_York"))
+
+    assert (run_error.value.status, run_error.value.code) == (400, "invalid_argument")
+    assert run_error.value.message == signals_error.value.message
+    assert queries == []
+
+
+@pytest.mark.parametrize(
+    "extra, named",
+    [
+        ({"time_range": {"start": "2024-04-01T00:30:00Z", "end": "2024-04-01T00:31:00Z"}}, "time_range"),
+        ({"selector": {"signal_ids": ["tc1_temp"]}}, "selector"),
+        ({"runtime_names": ["other"]}, "runtime_names"),
+    ],
+)
+def test_run_export_rejects_keys_it_does_not_read(monkeypatch: pytest.MonkeyPatch, extra, named):
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    queries: list[str] = []
+
+    def query_csv(_cfg, query):
+        queries.append(query)
+        return _CSV_HEADER
+
+    monkeypatch.setattr(module, "influx_query_csv", query_csv)
+
+    with pytest.raises(module.ApiError) as error:
+        svc.execute_run_export(_run_body(**extra))
+
+    assert (error.value.status, error.value.code) == (400, "invalid_argument")
+    assert named in error.value.message
+    assert queries == []
+
+
+def test_run_export_accepts_every_documented_key(monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    monkeypatch.setattr(module, "influx_query_csv", lambda _cfg, _query: _CSV_HEADER)
+
+    status, body = svc.execute_run_export(
+        _run_body(
+            resolution={"mode": "raw_event"},
+            format="json",
+            columns=["timestamp", "signal_id", "value_double"],
+            seed_stable_signals=False,
+        )
+    )
+
+    assert status == 200
+    assert body["status"] == "ok"
