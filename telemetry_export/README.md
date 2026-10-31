@@ -157,6 +157,9 @@ Semantics (anolishq/anolis-telemetry-export#31):
   `polling_interval_ms` is carried in `manifest.run` so a consumer can reason
   about it. `run_id` is **never** a telemetry tag — correlation is purely this
   time-window join over the frozen 4-tag schema.
+  `ended_at_epoch_ms` must be after `started_at_epoch_ms`: a zero-length run
+  is empty and returns `400 invalid_argument` naming the `run` field, as does
+  an open run whose start is not before the server's now.
 * **Every scoped series is seeded** with its last known value before
   `started_at`, carried forward to `started_at`. A flat signal still has a point,
   and one that changes later in the run has its value from the start. A series

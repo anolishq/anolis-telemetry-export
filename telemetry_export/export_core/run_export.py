@@ -154,9 +154,10 @@ def parse_run_manifest(value: Any) -> RunManifest:
 
     started = _require_int(value.get("started_at_epoch_ms"), "run.started_at_epoch_ms")
     ended = _optional_int(value.get("ended_at_epoch_ms"), "run.ended_at_epoch_ms")
-    if ended is not None and ended < started:
+    # The window is half-open [started, ended), so ended == started is empty (#104).
+    if ended is not None and ended <= started:
         raise ApiError(
-            HTTPStatus.BAD_REQUEST, "invalid_argument", "run.ended_at_epoch_ms must be >= started_at_epoch_ms"
+            HTTPStatus.BAD_REQUEST, "invalid_argument", "run.ended_at_epoch_ms must be > started_at_epoch_ms"
         )
 
     tag_scope = value.get("tag_scope", {})
@@ -198,6 +199,12 @@ def build_signals_request_from_run(
     validation + guardrails). The window is half-open [start, end); an open run
     exports up to `now`."""
     end_ms = run.ended_at_epoch_ms if run.ended_at_epoch_ms is not None else now_epoch_ms
+    if end_ms <= run.started_at_epoch_ms:
+        raise ApiError(
+            HTTPStatus.BAD_REQUEST,
+            "invalid_argument",
+            "run.started_at_epoch_ms is not before now; an open run has nothing to export yet",
+        )
     request: dict[str, Any] = {
         "time_range": {"start": _epoch_ms_to_iso(run.started_at_epoch_ms), "end": _epoch_ms_to_iso(end_ms)},
         "selector": {
