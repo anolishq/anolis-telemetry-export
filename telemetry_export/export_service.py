@@ -338,6 +338,21 @@ class ExportService:
         if not isinstance(request_body, dict):
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "request body must be a JSON object")
 
+        if "timezone" in request_body:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_argument",
+                "timezone is not supported in v1 (timestamps are always UTC)",
+            )
+        allowed_fields = {"run", "resolution", "format", "columns", "seed_stable_signals"}
+        unknown_fields = sorted(set(request_body) - allowed_fields)
+        if unknown_fields:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_argument",
+                f"unsupported run export fields: {', '.join(unknown_fields)}",
+            )
+
         run = parse_run_manifest(request_body.get("run"))
         resolution = request_body.get("resolution") or {"mode": "raw_event"}
         fmt = request_body.get("format", "json")
