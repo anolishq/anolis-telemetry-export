@@ -140,6 +140,16 @@ def validate_downsample_column_combination(resolution: Resolution, columns: list
         )
 
 
+def reject_timezone(body: dict[str, Any]) -> None:
+    """Timestamps are always UTC in v1, so a request asking for another zone fails."""
+    if "timezone" in body:
+        raise ApiError(
+            HTTPStatus.BAD_REQUEST,
+            "invalid_argument",
+            "timezone is not supported in v1 (timestamps are always UTC)",
+        )
+
+
 def validate_query_request(body: Any, limits: LimitConfig) -> SignalsQuery:
     if not isinstance(body, dict):
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "request body must be a JSON object")
@@ -188,12 +198,7 @@ def validate_query_request(body: Any, limits: LimitConfig) -> SignalsQuery:
     if not isinstance(fmt, str) or fmt not in ALLOWED_FORMATS:
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", f"format must be one of: {sorted(ALLOWED_FORMATS)}")
 
-    if "timezone" in body:
-        raise ApiError(
-            HTTPStatus.BAD_REQUEST,
-            "invalid_argument",
-            "timezone is not supported in v1 (timestamps are always UTC)",
-        )
+    reject_timezone(body)
 
     columns = parse_columns(body.get("columns"))
     validate_downsample_column_combination(resolution, columns)

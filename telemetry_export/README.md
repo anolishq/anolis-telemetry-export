@@ -84,8 +84,8 @@ For `resolution.mode=downsampled`:
 
 `timezone` request input is not supported in v1.
 All timestamps are exported in UTC (`RFC3339 Z`).
-Supplying `timezone` to `POST /v1/exports/signals:query` returns
-`400 invalid_argument`. `POST /v1/exports/runs:export` ignores it.
+Supplying `timezone` to `POST /v1/exports/signals:query` or
+`POST /v1/exports/runs:export` returns `400 invalid_argument`.
 
 ## Response Formats
 
@@ -137,6 +137,11 @@ script scopes the manifest to the runtime named by the `run_id`'s prefix
   "seed_stable_signals": true                // optional, default true
 }
 ```
+
+`run`, `resolution`, `format`, `columns` and `seed_stable_signals` are the
+only top-level keys. Any other key, such as `time_range`, `selector` or
+`timezone`, returns `400 invalid_argument` before anything is queried: the
+window and scope come from the run.
 
 The response is a JSON envelope with the windowed rows (`data` for json,
 `ndjson_body` for ndjson, `csv_body` for csv), an augmented `manifest`

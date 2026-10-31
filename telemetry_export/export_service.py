@@ -56,7 +56,7 @@ from telemetry_export.export_core.serialization import (
     parse_influx_csv_rows,
     render_csv,
 )
-from telemetry_export.export_core.validation import parse_rfc3339_utc, validate_query_request
+from telemetry_export.export_core.validation import parse_rfc3339_utc, reject_timezone, validate_query_request
 
 LOGGER = logging.getLogger("telemetry_export")
 
@@ -93,6 +93,9 @@ SUFFIX_BY_FORMAT = {
     "json": ".json",
     "ndjson": ".ndjson",
 }
+
+# The top-level keys runs:export reads; any other key is refused (#97).
+RUN_EXPORT_KEYS = frozenset({"run", "resolution", "format", "columns", "seed_stable_signals"})
 
 
 def _series_key(row: dict[str, str]) -> tuple[str, str, str, str]:
@@ -337,6 +340,17 @@ class ExportService:
         annotations."""
         if not isinstance(request_body, dict):
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "request body must be a JSON object")
+        # The window and scope come from the run, so a key such as time_range
+        # or selector would be dropped without a word (#97).
+        reject_timezone(request_body)
+        unknown = sorted(set(request_body) - RUN_EXPORT_KEYS)
+        if unknown:
+            raise ApiError(
+                HTTPStatus.BAD_REQUEST,
+                "invalid_argument",
+                f"runs:export does not accept {', '.join(unknown)}; "
+                f"accepted keys: {', '.join(sorted(RUN_EXPORT_KEYS))}",
+            )
 
         run = parse_run_manifest(request_body.get("run"))
         resolution = request_body.get("resolution") or {"mode": "raw_event"}
