@@ -42,13 +42,11 @@ Optional headers for traceability:
 If missing, the service generates `X-Request-Id` and defaults requester to
 `anonymous`. Successful responses include `X-Request-Id`.
 
-`POST /v1/exports/signals:query` responses also include:
+`POST /v1/exports/signals:query` and `POST /v1/exports/runs:export` responses
+also include:
 
 1. `X-Export-Id`
 2. `X-Export-Manifest-Hash` (`sha256:...`)
-
-`POST /v1/exports/runs:export` responses carry neither header; the export id is
-in the body at `manifest.export_id`.
 
 The full manifest is always available in JSON bodies and via
 `GET /v1/exports/manifests/{export_id}`.
@@ -95,16 +93,17 @@ Supplying `timezone` to `POST /v1/exports/signals:query` or
 2. `csv`
 3. `ndjson`
 
-On `signals:query`, all formats use a bounded-memory spool-to-file pipeline
-before response streaming to avoid assembling full exports in RAM.
-`runs:export` builds its whole JSON envelope in memory.
+Both routes stream the Influx response and spool the export to a file before
+sending it, so a full export is not assembled in RAM. `max_rows` is enforced
+while rows are read. `runs:export` holds its seed rows (at most one per scoped
+series) in memory and spools the window's rows to disk until it writes them.
 
-Byte limits:
+Byte limits, on both routes:
 
-1. `limits.max_response_bytes` applies to `format=json` on `signals:query`, and
-   to every format on `runs:export`.
-2. `limits.max_stream_bytes` applies to streamed formats (`csv`, `ndjson`) on
-   `signals:query`.
+1. `limits.max_response_bytes` applies to `format=json`.
+2. `limits.max_stream_bytes` applies to `csv` and `ndjson`. On `runs:export`
+   it counts the whole JSON envelope that carries the `csv_body` or
+   `ndjson_body`.
 
 ## Run-based export (`POST /v1/exports/runs:export`)
 
@@ -331,9 +330,8 @@ python telemetry_export/examples/query_signals.py \
    bounds and positive limit values).
 5. `authorization.enforce_selector_scope=true` requires at least one non-empty
    `allowed_*` allowlist.
-6. On `signals:query`, `limits.max_response_bytes` is enforced for `format=json`;
-   streamed formats (`csv`, `ndjson`) are governed by `limits.max_stream_bytes`
-   and `max_rows`. On `runs:export`, every format is governed by
-   `limits.max_response_bytes` and `max_rows`.
+6. On both export routes, `limits.max_response_bytes` is enforced for
+   `format=json`; `csv` and `ndjson` are governed by `limits.max_stream_bytes`.
+   `max_rows` applies to every format.
 7. Manifest metadata retention is bounded by `limits.max_manifest_entries` and
    `limits.manifest_ttl_seconds`.
