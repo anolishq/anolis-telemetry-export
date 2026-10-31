@@ -19,7 +19,10 @@ Use bearer token auth on every export request:
 
 - Header: `Authorization: Bearer <token>`
 
-This applies to both query and manifest routes.
+This applies to both query and manifest routes. The scheme matches in any case
+(`bearer`, `BEARER`); one or more spaces separate it from the token, and a tab
+does not. The token itself is compared exactly. A missing, malformed or wrong
+token returns `401 unauthenticated` as JSON on every route.
 
 Token comes from service config (`server.auth_token`).
 Token precedence:
