@@ -910,6 +910,7 @@ def test_execute_spooled_query_ndjson_enforces_max_stream_bytes(
 
     assert exc_info.value.status == 413
     assert exc_info.value.code == "limit_exceeded"
+    assert "max_stream_bytes=64" in exc_info.value.message
 
 
 def test_execute_spooled_query_csv_enforces_max_stream_bytes(monkeypatch: pytest.MonkeyPatch):
@@ -966,6 +967,7 @@ def test_execute_spooled_query_csv_enforces_max_stream_bytes(monkeypatch: pytest
 
     assert exc_info.value.status == 413
     assert exc_info.value.code == "limit_exceeded"
+    assert "max_stream_bytes=64" in exc_info.value.message
 
 
 def test_execute_spooled_query_json_enforces_max_response_bytes(monkeypatch: pytest.MonkeyPatch):
@@ -1022,6 +1024,7 @@ def test_execute_spooled_query_json_enforces_max_response_bytes(monkeypatch: pyt
 
     assert exc_info.value.status == 413
     assert exc_info.value.code == "limit_exceeded"
+    assert "max_response_bytes=128" in exc_info.value.message
 
 
 def test_execute_spooled_query_maps_stream_decode_errors_to_upstream_error(monkeypatch: pytest.MonkeyPatch):

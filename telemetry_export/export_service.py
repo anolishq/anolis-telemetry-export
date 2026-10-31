@@ -124,9 +124,10 @@ def parse_args() -> argparse.Namespace:
 class _BoundedTextWriter:
     """UTF-8 text writer with deterministic max-byte enforcement."""
 
-    def __init__(self, handle: Any, max_bytes: int):
+    def __init__(self, handle: Any, max_bytes: int, limit_name: str):
         self._handle = handle
         self._max_bytes = max_bytes
+        self._limit_name = limit_name  # the config key behind max_bytes, for the 413 message
         self._bytes_written = 0
 
     def write(self, text: str) -> int:
@@ -136,7 +137,7 @@ class _BoundedTextWriter:
             raise ApiError(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 "limit_exceeded",
-                f"response exceeds max_response_bytes={self._max_bytes}",
+                f"response exceeds {self._limit_name}={self._max_bytes}",
             )
         written = self._handle.write(text)
         return int(written)
@@ -495,10 +496,11 @@ class ExportService:
             suffix=suffix,
         )
         tmp_path = Path(tmp_file.name)
-        max_bytes = (
-            self.config.limits.max_response_bytes if query.fmt == "json" else self.config.limits.max_stream_bytes
-        )
-        bounded_writer = _BoundedTextWriter(tmp_file, max_bytes)
+        limits = self.config.limits
+        if query.fmt == "json":
+            bounded_writer = _BoundedTextWriter(tmp_file, limits.max_response_bytes, "max_response_bytes")
+        else:
+            bounded_writer = _BoundedTextWriter(tmp_file, limits.max_stream_bytes, "max_stream_bytes")
         export_id = str(uuid.uuid4())
         row_count = 0
         content_length = 0
