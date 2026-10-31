@@ -1279,3 +1279,44 @@ def test_run_export_seeds_only_series_without_a_point_at_started_at(monkeypatch:
     ]
     assert body["manifest"]["seed"] == {"enabled": True, "seeded_rows": 2, "lookback_seconds": 3600}
     assert body["manifest"]["row_count"] == 5
+
+
+@pytest.mark.parametrize(
+    "extra, message",
+    [
+        ({"timezone": "America/New_York"}, "timezone is not supported in v1 (timestamps are always UTC)"),
+        ({"timezone": None}, "timezone is not supported in v1 (timestamps are always UTC)"),
+        ({"time_range": {}}, "unsupported run export fields: time_range"),
+        ({"selector": {}}, "unsupported run export fields: selector"),
+        ({"unexpected": False, "selector": {}}, "unsupported run export fields: selector, unexpected"),
+    ],
+)
+def test_run_export_rejects_unsupported_fields_before_query(monkeypatch, extra, message):
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    calls = []
+
+    def query(*args):
+        calls.append(args)
+        return _CSV_HEADER
+
+    monkeypatch.setattr(module, "influx_query_csv", query)
+    request = {
+        "run": {
+            "schema_version": 1,
+            "run_id": "synthetic-run",
+            "started_at_epoch_ms": 1_711_929_600_000,
+            "ended_at_epoch_ms": 1_711_933_200_000,
+            "polling_interval_ms": 2000,
+            "runtime_names": ["bioreactor-telemetry"],
+            "tag_scope": {},
+            "markers": [],
+        },
+        **extra,
+    }
+    with pytest.raises(module.ApiError) as exc_info:
+        svc.execute_run_export(request)
+    assert exc_info.value.status == 400
+    assert exc_info.value.code == "invalid_argument"
+    assert exc_info.value.message == message
+    assert calls == []
