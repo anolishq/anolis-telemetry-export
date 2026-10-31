@@ -34,6 +34,8 @@ from typing import Any
 from .models import ApiError
 
 RUN_MANIFEST_SCHEMA_VERSION = 1
+# The manifest versions this exporter reads; any other is refused (#96).
+SUPPORTED_RUN_MANIFEST_SCHEMA_VERSIONS = frozenset({RUN_MANIFEST_SCHEMA_VERSION})
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,15 @@ def parse_run_manifest(value: Any) -> RunManifest:
     if not isinstance(value, dict):
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "run object is required")
 
+    schema_version = _require_int(value.get("schema_version", RUN_MANIFEST_SCHEMA_VERSION), "run.schema_version")
+    if schema_version not in SUPPORTED_RUN_MANIFEST_SCHEMA_VERSIONS:
+        supported = ", ".join(str(v) for v in sorted(SUPPORTED_RUN_MANIFEST_SCHEMA_VERSIONS))
+        raise ApiError(
+            HTTPStatus.BAD_REQUEST,
+            "invalid_argument",
+            f"run.schema_version {schema_version} is not supported (supported: {supported})",
+        )
+
     run_id = value.get("run_id")
     if not isinstance(run_id, str) or not run_id.strip():
         raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "run.run_id is required")
@@ -171,7 +182,7 @@ def parse_run_manifest(value: Any) -> RunManifest:
         runtime_version=value.get("runtime_version") if isinstance(value.get("runtime_version"), str) else None,
         experiment_label=value.get("experiment_label") if isinstance(value.get("experiment_label"), str) else None,
         automation_version=automation_version,
-        schema_version=_require_int(value.get("schema_version", RUN_MANIFEST_SCHEMA_VERSION), "run.schema_version"),
+        schema_version=schema_version,
     )
 
 
@@ -206,6 +217,7 @@ def build_signals_request_from_run(
 def run_provenance(run: RunManifest, *, resolved_end_epoch_ms: int) -> dict[str, Any]:
     """The run provenance block embedded in a run-export manifest."""
     return {
+        "schema_version": run.schema_version,
         "run_id": run.run_id,
         "experiment_label": run.experiment_label,
         "started_at_epoch_ms": run.started_at_epoch_ms,

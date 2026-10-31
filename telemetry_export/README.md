@@ -161,6 +161,9 @@ Semantics (anolishq/anolis-telemetry-export#31):
   non-empty `tag_scope` to bound the pre-window lookback (`max_span_seconds`).
 * **Markers** render as **Grafana annotation regions** (the run window) + point
   annotations (markers / lifecycle events). See `grafana/README.md`.
+* **`run.schema_version`** must be a version this exporter reads: `1` today.
+  Omitted, it is `1`; any other value returns `400 invalid_argument` naming the
+  supported versions. `manifest.run.schema_version` records the version used.
 
 ## Run
 
