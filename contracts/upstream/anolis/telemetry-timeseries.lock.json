@@ -3,18 +3,18 @@
   "source": {
     "repo": "anolishq/anolis",
     "path": "schemas/telemetry/telemetry-timeseries.schema.v1.json",
-    "tag": "v0.1.24"
+    "tag": "v0.9.0"
   },
   "distribution": {
     "mode": "release-artifact",
     "release": {
       "repo": "anolishq/anolis",
-      "tag": "v0.1.24",
-      "asset": "anolis-0.1.24-telemetry-schema.tar.gz",
+      "tag": "v0.9.0",
+      "asset": "anolis-0.9.0-telemetry-schema.tar.gz",
       "manifest_asset": "telemetry-schema-manifest.json"
     },
     "schema_sha256": "4109e2a4b55282fdd53e6f0cfea6ea39e091758cd94b7acb46891ced9d567223",
-    "asset_sha256": "5cf39162eda2e4e8cea73b727c990e3c2271aebb152e874093b5146cc733d845"
+    "asset_sha256": "9fbe094d41377d1f8cef533dab87ac71f28c2090649ea9b9111c7729f1b57c15"
   },
-  "synced_at_utc": "2026-06-28T17:55:00Z"
+  "synced_at_utc": "2026-11-01T02:54:53Z"
 }

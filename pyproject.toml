@@ -1,6 +1,6 @@
 [project]
 name = "anolis-telemetry-export"
-version = "0.1.1"
+version = "0.2.0"
 description = "Telemetry export service for the Anolis bioreactor runtime"
 requires-python = ">=3.11"
 dependencies = [
