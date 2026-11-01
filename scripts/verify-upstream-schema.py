@@ -20,6 +20,10 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import urlopen
 
+# A lock without a mode is a legacy manual-copy lock; any other mode is refused,
+# so a mistyped one cannot downgrade verification to manual-copy (#104).
+LOCK_MODES = ("manual-copy", "release-artifact")
+
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
@@ -210,12 +214,13 @@ def validate_release_mode(
         try:
             manifest_bytes = fetch_url_bytes(manifest_url)
             manifest = json.loads(manifest_bytes.decode("utf-8"))
-            if isinstance(manifest, dict):
-                manifest_asset_name = manifest.get("asset")
-                manifest_sha = manifest.get("sha256")
-                if manifest_asset_name != asset or manifest_sha != expected_asset_sha:
-                    print("\nERROR: telemetry-schema-manifest does not match pinned lock values", file=sys.stderr)
-                    return 1
+            if not isinstance(manifest, dict):
+                raise RuntimeError("schema manifest asset must be a JSON object")
+            manifest_asset_name = manifest.get("asset")
+            manifest_sha = manifest.get("sha256")
+            if manifest_asset_name != asset or manifest_sha != expected_asset_sha:
+                print("\nERROR: telemetry-schema-manifest does not match pinned lock values", file=sys.stderr)
+                return 1
         except Exception as exc:
             print(f"\nERROR: failed to validate manifest asset '{manifest_asset}': {exc}", file=sys.stderr)
             return 1
@@ -270,6 +275,10 @@ def main() -> int:
     distribution = lock.get("distribution") if isinstance(lock, dict) else None
     mode = distribution.get("mode") if isinstance(distribution, dict) else None
 
+    if mode is not None and mode not in LOCK_MODES:
+        print(f"ERROR: unknown lock mode '{mode}' (accepted: {', '.join(LOCK_MODES)})", file=sys.stderr)
+        return 1
+
     if args.require_release_artifact and mode != "release-artifact":
         print(f"ERROR: lock mode must be 'release-artifact', found '{mode}'", file=sys.stderr)
         return 1
@@ -277,7 +286,7 @@ def main() -> int:
     if mode == "release-artifact":
         return validate_release_mode(schema_bytes, schema_path, lock_path, lock, offline=args.offline)
 
-    # Backward-compatible default path (manual-copy mode / legacy locks).
+    # manual-copy, or a legacy lock without a mode.
     return validate_manual_mode(schema_bytes, schema_path, lock_path, lock)
 
 
