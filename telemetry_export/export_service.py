@@ -159,11 +159,16 @@ class ExportService:
         self._manifest_by_export_id: dict[str, dict[str, Any]] = {}
 
     def authorize(self, authorization_header: str | None) -> None:
-        if not authorization_header or not authorization_header.startswith("Bearer "):
+        # The scheme is case-insensitive (RFC 7235 §2.1); one or more spaces
+        # separate it from the token, and the token is compared exactly.
+        scheme, separator, token = (authorization_header or "").partition(" ")
+        if not separator or scheme.lower() != "bearer":
             raise ApiError(HTTPStatus.UNAUTHORIZED, "unauthenticated", "Authorization: Bearer <token> is required")
 
-        supplied = authorization_header[len("Bearer ") :].strip()
-        if not supplied or not hmac.compare_digest(supplied, self.config.server.auth_token):
+        supplied = token.strip()
+        # As bytes: compare_digest raises TypeError on a non-ASCII str, which
+        # would answer 500 for a malformed token.
+        if not supplied or not hmac.compare_digest(supplied.encode(), self.config.server.auth_token.encode()):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "unauthenticated", "invalid bearer token")
 
     def enforce_scope(self, query: SignalsQuery) -> None:
@@ -655,20 +660,23 @@ class ExportRequestHandler(BaseHTTPRequestHandler):
 
         prefix = "/v1/exports/manifests/"
         if self.path.startswith(prefix):
-            self.service.authorize(self.headers.get("Authorization"))
-            export_id = self.path[len(prefix) :].strip()
-            if not export_id:
-                self.send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    json_error_payload("invalid_argument", "export_id is required"),
-                    request_id=request_id,
-                )
+            # As do_POST does: every error is a JSON answer, never a closed socket.
+            try:
+                self.service.authorize(self.headers.get("Authorization"))
+                export_id = self.path[len(prefix) :].strip()
+                if not export_id:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "export_id is required")
+                manifest = self.service.get_manifest(export_id)
+                if manifest is None:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found", f"manifest not found for export_id={export_id}")
+            except ApiError as exc:
+                self.send_json(exc.status, json_error_payload(exc.code, exc.message), request_id=request_id)
                 return
-            manifest = self.service.get_manifest(export_id)
-            if manifest is None:
+            except Exception as exc:
+                LOGGER.exception("request_id=%s unhandled export service error", request_id)
                 self.send_json(
-                    HTTPStatus.NOT_FOUND,
-                    json_error_payload("not_found", f"manifest not found for export_id={export_id}"),
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    json_error_payload("internal", f"unexpected error: {exc}"),
                     request_id=request_id,
                 )
                 return

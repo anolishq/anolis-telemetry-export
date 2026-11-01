@@ -1373,3 +1373,111 @@ def test_run_export_accepts_every_documented_key(monkeypatch: pytest.MonkeyPatch
 
     assert status == 200
     assert body["status"] == "ok"
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER", "bEaReR"])
+def test_authorize_matches_the_scheme_in_any_case(scheme):
+    # anolishq/anolis-telemetry-export#104: RFC 7235 auth schemes are case-insensitive.
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    svc.authorize(f"{scheme} export-dev-token")
+    svc.authorize(f"{scheme}   export-dev-token")
+    with pytest.raises(module.ApiError) as error:
+        svc.authorize(f"{scheme} wrong-token")
+    assert (error.value.status, error.value.code) == (401, "unauthenticated")
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        None,
+        "",
+        "Bearer",
+        "Bearer ",
+        "Basic export-dev-token",
+        "Bearer\texport-dev-token",
+        "Bearerexport-dev-token",
+        "Bearer \xe9",
+        "Bearer export-dev-token\xe9",
+    ],
+)
+def test_authorize_still_refuses_a_missing_or_malformed_header(header):
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    with pytest.raises(module.ApiError) as error:
+        svc.authorize(header)
+    assert (error.value.status, error.value.code) == (401, "unauthenticated")
+
+
+def _serve(module):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    handler = type("Handler", (module.ExportRequestHandler,), {"service": module.ExportService(_test_config(module))})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Token export-dev-token", "Bearer \xe9"])
+def test_manifest_route_answers_401_without_a_valid_token(authorization):
+    # anolishq/anolis-telemetry-export#104: do_GET raised ApiError outside a
+    # handler, so the server closed the connection instead of answering.
+    import http.client
+
+    module = _load_module()
+    server = _serve(module)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        headers = {"X-Request-Id": "req-401"}
+        if authorization is not None:
+            headers["Authorization"] = authorization
+        conn.request("GET", "/v1/exports/manifests/abc", headers=headers)
+        response = conn.getresponse()
+        body = json.loads(response.read())
+        assert response.status == 401
+        assert response.getheader("X-Request-Id") == "req-401"
+        assert body["error"]["code"] == "unauthenticated"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_manifest_route_still_answers_404_with_a_valid_token():
+    import http.client
+
+    module = _load_module()
+    server = _serve(module)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        conn.request("GET", "/v1/exports/manifests/abc", headers={"Authorization": "bearer export-dev-token"})
+        response = conn.getresponse()
+        assert response.status == 404
+        assert json.loads(response.read())["error"]["code"] == "not_found"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_manifest_route_answers_500_json_on_an_unexpected_error(monkeypatch: pytest.MonkeyPatch):
+    import http.client
+
+    module = _load_module()
+    server = _serve(module)
+
+    def broken(_export_id):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(server.RequestHandlerClass.service, "get_manifest", broken)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        conn.request("GET", "/v1/exports/manifests/abc", headers={"Authorization": "Bearer export-dev-token"})
+        response = conn.getresponse()
+        assert response.status == 500
+        assert json.loads(response.read())["error"]["code"] == "internal"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
