@@ -3,6 +3,8 @@ stable-signal seed query, and Grafana run annotations."""
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 
 from telemetry_export.export_core.flux_builder import build_seed_flux_query_from_plan
@@ -78,6 +80,39 @@ def test_parse_run_manifest_defaults_an_omitted_schema_version_to_1():
     body = _manifest_body()
     del body["schema_version"]
     assert parse_run_manifest(body).schema_version == 1
+
+
+def test_parse_run_manifest_refuses_a_zero_length_run():
+    # anolishq/anolis-telemetry-export#104: the window is half-open, so
+    # ended == started is empty; it failed later with a time_range error.
+    with pytest.raises(ApiError) as error:
+        parse_run_manifest(_manifest_body(ended_at_epoch_ms=1_711_929_600_000))
+    assert (error.value.status, error.value.code) == (400, "invalid_argument")
+    assert "run.ended_at_epoch_ms" in error.value.message
+    assert "time_range" not in error.value.message
+
+
+@pytest.mark.parametrize("now_epoch_ms", [1_711_929_600_000, 1_711_929_000_000])
+def test_an_open_run_not_started_before_now_is_refused_by_its_run_fields(now_epoch_ms):
+    run = parse_run_manifest(_manifest_body(ended_at_epoch_ms=None))
+    with pytest.raises(ApiError) as error:
+        build_signals_request_from_run(
+            run, resolution={"mode": "raw_event"}, fmt="json", columns=None, now_epoch_ms=now_epoch_ms
+        )
+    assert (error.value.status, error.value.code) == (400, "invalid_argument")
+    assert "run.started_at_epoch_ms" in error.value.message
+    assert "time_range" not in error.value.message
+
+
+def test_a_one_millisecond_run_is_still_accepted():
+    run = parse_run_manifest(_manifest_body(ended_at_epoch_ms=1_711_929_600_001))
+    request = build_signals_request_from_run(
+        run, resolution={"mode": "raw_event"}, fmt="json", columns=None, now_epoch_ms=0
+    )
+    window = request["time_range"]
+    assert datetime.fromisoformat(window["end"].replace("Z", "+00:00")) > datetime.fromisoformat(
+        window["start"].replace("Z", "+00:00")
+    )
 
 
 def test_open_run_has_no_scope_flag_and_null_end():
