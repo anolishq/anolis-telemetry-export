@@ -11,6 +11,8 @@ from __future__ import annotations
 import argparse
 import csv
 import hmac
+import io
+import itertools
 import json
 import logging
 import tempfile
@@ -124,9 +126,10 @@ def parse_args() -> argparse.Namespace:
 class _BoundedTextWriter:
     """UTF-8 text writer with deterministic max-byte enforcement."""
 
-    def __init__(self, handle: Any, max_bytes: int):
+    def __init__(self, handle: Any, max_bytes: int, limit_name: str):
         self._handle = handle
         self._max_bytes = max_bytes
+        self._limit_name = limit_name  # the config key behind max_bytes, for the 413 message
         self._bytes_written = 0
 
     def write(self, text: str) -> int:
@@ -136,7 +139,7 @@ class _BoundedTextWriter:
             raise ApiError(
                 HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
                 "limit_exceeded",
-                f"response exceeds max_response_bytes={self._max_bytes}",
+                f"response exceeds {self._limit_name}={self._max_bytes}",
             )
         written = self._handle.write(text)
         return int(written)
@@ -158,11 +161,16 @@ class ExportService:
         self._manifest_by_export_id: dict[str, dict[str, Any]] = {}
 
     def authorize(self, authorization_header: str | None) -> None:
-        if not authorization_header or not authorization_header.startswith("Bearer "):
+        # The scheme is case-insensitive (RFC 7235 §2.1); one or more spaces
+        # separate it from the token, and the token is compared exactly.
+        scheme, separator, token = (authorization_header or "").partition(" ")
+        if not separator or scheme.lower() != "bearer":
             raise ApiError(HTTPStatus.UNAUTHORIZED, "unauthenticated", "Authorization: Bearer <token> is required")
 
-        supplied = authorization_header[len("Bearer ") :].strip()
-        if not supplied or not hmac.compare_digest(supplied, self.config.server.auth_token):
+        supplied = token.strip()
+        # As bytes: compare_digest raises TypeError on a non-ASCII str, which
+        # would answer 500 for a malformed token.
+        if not supplied or not hmac.compare_digest(supplied.encode(), self.config.server.auth_token.encode()):
             raise ApiError(HTTPStatus.UNAUTHORIZED, "unauthenticated", "invalid bearer token")
 
     def enforce_scope(self, query: SignalsQuery) -> None:
@@ -327,17 +335,40 @@ class ExportService:
             "csv_body": csv_body,
         }
 
+    def _stream_influx_rows(self, flux_query: str) -> Any:
+        """Rows of a streamed Influx query, read one at a time."""
+        response = influx_query_csv_stream(self.config, flux_query)
+        try:
+            yield from iter_influx_csv_rows(response)
+        except UnicodeDecodeError as exc:
+            raise ApiError(
+                HTTPStatus.BAD_GATEWAY, "upstream_error", "failed to decode Influx CSV stream as UTF-8"
+            ) from exc
+        finally:
+            response.close()
+
+    def _check_row_count(self, row_count: int) -> None:
+        if row_count > self.config.limits.max_rows:
+            raise ApiError(
+                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                "limit_exceeded",
+                f"row count exceeds max_rows={self.config.limits.max_rows}",
+            )
+
     def execute_run_export(
         self,
         request_body: Any,
         *,
         request_id: str = "unknown",
         requester_id: str = "anonymous",
-    ) -> tuple[int, dict[str, Any]]:
+    ) -> SpoolResult:
         """Export a run's telemetry from a portable RunManifest: derive the
         half-open [run_start, run_end) window + scope, seed each scoped series
         with its last value carried forward to run_start, and attach Grafana run
-        annotations."""
+        annotations.
+
+        Both Influx queries are streamed and the JSON envelope is spooled to a
+        temp file through the same byte limits as signals:query (#99)."""
         if not isinstance(request_body, dict):
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "request body must be a JSON object")
         # The window and scope come from the run, so a key such as time_range
@@ -367,92 +398,133 @@ class ExportService:
         query = validate_query_request(signals_request, self.config.limits)
         self.enforce_scope(query)
 
-        flux_query = build_flux_query(query, self.config.influx.bucket)
-        raw_rows = parse_influx_csv_rows(influx_query_csv(self.config, flux_query))
-
-        # Seed: carry each scoped series' last value before run_start forward to
-        # the window boundary, so a signal that never changes during the run still
-        # has a point and one that changes later has its value from the start.
-        # Bounded by max_span_seconds and only when the run is scoped (an unscoped
-        # seed would scan every series in the bucket).
-        seed_info: dict[str, Any] = {"enabled": bool(seed_stable_signals)}
-        if seed_stable_signals and run.has_scope:
-            lookback_seconds = self.config.limits.max_span_seconds
-            seed_query = SignalsQuery(
-                start=query.start - timedelta(seconds=lookback_seconds),
-                end=query.start,
-                resolution=Resolution(mode="raw_event"),
-                fmt="json",
-                columns=query.columns,
-                runtime_names=query.runtime_names,
-                provider_ids=query.provider_ids,
-                device_ids=query.device_ids,
-                signal_ids=query.signal_ids,
-                original_request={},
-            )
-            seed_plan = build_query_plan(seed_query, self.config.influx.bucket)
-            seed_rows = parse_influx_csv_rows(influx_query_csv(self.config, build_seed_flux_query_from_plan(seed_plan)))
-            # A series with a real point at run_start needs no seed there: two rows
-            # for one series at one timestamp would conflict (#95).
-            measured_at_start = {_series_key(row) for row in raw_rows if _is_at(row.get("_time", ""), query.start)}
-            seed_rows = [row for row in seed_rows if _series_key(row) not in measured_at_start]
-            run_start_iso = query.start.isoformat().replace("+00:00", "Z")
-            for row in seed_rows:
-                row["_time"] = run_start_iso  # carry forward to the window boundary
-            raw_rows = seed_rows + raw_rows
-            seed_info.update({"seeded_rows": len(seed_rows), "lookback_seconds": lookback_seconds})
-        elif seed_stable_signals and not run.has_scope:
-            seed_info.update({"skipped": "run has no tag_scope; seeding requires a scope to bound the lookback"})
-
-        if len(raw_rows) > self.config.limits.max_rows:
-            raise ApiError(
-                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                "limit_exceeded",
-                f"row count exceeds max_rows={self.config.limits.max_rows}",
-            )
-
-        normalized_rows = normalize_rows(raw_rows, query.columns)
-        export_id = str(uuid.uuid4())
-        manifest = build_manifest(
-            query,
-            self.config,
-            row_count=len(normalized_rows),
-            export_id=export_id,
-            request_id=request_id,
-            requester_id=requester_id,
+        limits = self.config.limits
+        # The window's normalized rows, one JSON object per line, until the
+        # seed rows that go before them are known.
+        window_file = tempfile.TemporaryFile(mode="w+", encoding="utf-8", newline="")
+        out_file = tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="", delete=False, prefix="anolis_run_export_", suffix=".json"
         )
-        resolved_end = run.ended_at_epoch_ms if run.ended_at_epoch_ms is not None else now_epoch_ms
-        annotations = build_run_annotations(run, resolved_end_epoch_ms=resolved_end)
-        manifest["dataset"] = "run"
-        manifest["run"] = run_provenance(run, resolved_end_epoch_ms=resolved_end)
-        manifest["seed"] = seed_info
-        manifest["annotations"] = annotations
-        manifest_hash = compute_manifest_hash(manifest)
-        self._store_manifest(export_id, manifest, manifest_hash)
+        out_path = Path(out_file.name)
+        try:
+            window_rows = 0
+            measured_at_start: set[tuple[str, str, str, str]] = set()
+            for raw in self._stream_influx_rows(build_flux_query(query, self.config.influx.bucket)):
+                window_rows += 1
+                self._check_row_count(window_rows)
+                if _is_at(raw.get("_time", ""), query.start):
+                    measured_at_start.add(_series_key(raw))
+                window_file.write(json.dumps(normalize_row(raw, query.columns), separators=(",", ":")) + "\n")
 
-        payload: dict[str, Any] = {
-            "status": "ok",
-            "dataset": "run",
-            "run_id": run.run_id,
-            "format": query.fmt,
-            "manifest": manifest,
-            "annotations": annotations,
-        }
-        if query.fmt == "json":
-            payload["data"] = normalized_rows
-        elif query.fmt == "ndjson":
-            payload["ndjson_body"] = "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in normalized_rows)
-        else:
-            payload["csv_body"] = render_csv(normalized_rows, query.columns)
+            # Seed: carry each scoped series' last value before run_start forward to
+            # the window boundary, so a signal that never changes during the run still
+            # has a point and one that changes later has its value from the start.
+            # Bounded by max_span_seconds and only when the run is scoped (an unscoped
+            # seed would scan every series in the bucket).
+            seed_rows: list[dict[str, Any]] = []
+            seed_info: dict[str, Any] = {"enabled": bool(seed_stable_signals)}
+            if seed_stable_signals and run.has_scope:
+                lookback_seconds = limits.max_span_seconds
+                seed_query = SignalsQuery(
+                    start=query.start - timedelta(seconds=lookback_seconds),
+                    end=query.start,
+                    resolution=Resolution(mode="raw_event"),
+                    fmt="json",
+                    columns=query.columns,
+                    runtime_names=query.runtime_names,
+                    provider_ids=query.provider_ids,
+                    device_ids=query.device_ids,
+                    signal_ids=query.signal_ids,
+                    original_request={},
+                )
+                seed_plan = build_query_plan(seed_query, self.config.influx.bucket)
+                run_start_iso = query.start.isoformat().replace("+00:00", "Z")
+                for raw in self._stream_influx_rows(build_seed_flux_query_from_plan(seed_plan)):
+                    # A series with a real point at run_start needs no seed there: two
+                    # rows for one series at one timestamp would conflict (#95).
+                    if _series_key(raw) in measured_at_start:
+                        continue
+                    raw["_time"] = run_start_iso  # carry forward to the window boundary
+                    seed_rows.append(normalize_row(raw, query.columns))
+                    self._check_row_count(window_rows + len(seed_rows))
+                seed_info.update({"seeded_rows": len(seed_rows), "lookback_seconds": lookback_seconds})
+            elif seed_stable_signals and not run.has_scope:
+                seed_info.update({"skipped": "run has no tag_scope; seeding requires a scope to bound the lookback"})
 
-        encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-        if len(encoded) > self.config.limits.max_response_bytes:
-            raise ApiError(
-                HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
-                "limit_exceeded",
-                f"response exceeds max_response_bytes={self.config.limits.max_response_bytes}",
+            row_count = len(seed_rows) + window_rows
+            export_id = str(uuid.uuid4())
+            manifest = build_manifest(
+                query,
+                self.config,
+                row_count=row_count,
+                export_id=export_id,
+                request_id=request_id,
+                requester_id=requester_id,
             )
-        return HTTPStatus.OK, payload
+            resolved_end = run.ended_at_epoch_ms if run.ended_at_epoch_ms is not None else now_epoch_ms
+            annotations = build_run_annotations(run, resolved_end_epoch_ms=resolved_end)
+            manifest["dataset"] = "run"
+            manifest["run"] = run_provenance(run, resolved_end_epoch_ms=resolved_end)
+            manifest["seed"] = seed_info
+            manifest["annotations"] = annotations
+            manifest_hash = compute_manifest_hash(manifest)
+
+            if query.fmt == "json":
+                writer = _BoundedTextWriter(out_file, limits.max_response_bytes, "max_response_bytes")
+            else:
+                writer = _BoundedTextWriter(out_file, limits.max_stream_bytes, "max_stream_bytes")
+            writer.write(
+                f'{{"status":"ok","dataset":"run","run_id":{json.dumps(run.run_id)},"format":{json.dumps(query.fmt)},'
+            )
+            window_file.seek(0)
+            lines = [json.dumps(row, separators=(",", ":")) + "\n" for row in seed_rows]
+            all_lines = itertools.chain(lines, window_file)
+            if query.fmt == "json":
+                writer.write('"data":[')
+                for index, line in enumerate(all_lines):
+                    writer.write(("," if index else "") + line.rstrip("\n"))
+                writer.write("]")
+            elif query.fmt == "ndjson":
+                # The body is one JSON string; each line goes in escaped, without quotes.
+                writer.write('"ndjson_body":"')
+                for line in all_lines:
+                    writer.write(json.dumps(line)[1:-1])
+                writer.write('"')
+            else:
+                writer.write('"csv_body":"')
+                buffer = io.StringIO()
+                csv_writer = csv.DictWriter(buffer, fieldnames=query.columns)
+                csv_writer.writeheader()
+                for line in all_lines:
+                    csv_writer.writerow(json.loads(line))
+                    writer.write(json.dumps(buffer.getvalue())[1:-1])
+                    buffer.seek(0)
+                    buffer.truncate()
+                writer.write(json.dumps(buffer.getvalue())[1:-1])
+                writer.write('"')
+            writer.write(
+                f',"manifest":{json.dumps(manifest, separators=(",", ":"))},'
+                f'"annotations":{json.dumps(annotations, separators=(",", ":"))}}}'
+            )
+            writer.flush()
+            out_file.close()
+            self._store_manifest(export_id, manifest, manifest_hash)
+            return SpoolResult(
+                path=out_path,
+                fmt=query.fmt,
+                content_type="application/json",
+                row_count=row_count,
+                content_length=writer.bytes_written,
+                export_id=export_id,
+                manifest_hash=manifest_hash,
+                manifest=manifest,
+            )
+        except Exception:
+            out_file.close()
+            out_path.unlink(missing_ok=True)
+            raise
+        finally:
+            window_file.close()
 
     def execute_spooled_query(
         self,
@@ -495,10 +567,11 @@ class ExportService:
             suffix=suffix,
         )
         tmp_path = Path(tmp_file.name)
-        max_bytes = (
-            self.config.limits.max_response_bytes if query.fmt == "json" else self.config.limits.max_stream_bytes
-        )
-        bounded_writer = _BoundedTextWriter(tmp_file, max_bytes)
+        limits = self.config.limits
+        if query.fmt == "json":
+            bounded_writer = _BoundedTextWriter(tmp_file, limits.max_response_bytes, "max_response_bytes")
+        else:
+            bounded_writer = _BoundedTextWriter(tmp_file, limits.max_stream_bytes, "max_stream_bytes")
         export_id = str(uuid.uuid4())
         row_count = 0
         content_length = 0
@@ -653,20 +726,23 @@ class ExportRequestHandler(BaseHTTPRequestHandler):
 
         prefix = "/v1/exports/manifests/"
         if self.path.startswith(prefix):
-            self.service.authorize(self.headers.get("Authorization"))
-            export_id = self.path[len(prefix) :].strip()
-            if not export_id:
-                self.send_json(
-                    HTTPStatus.BAD_REQUEST,
-                    json_error_payload("invalid_argument", "export_id is required"),
-                    request_id=request_id,
-                )
+            # As do_POST does: every error is a JSON answer, never a closed socket.
+            try:
+                self.service.authorize(self.headers.get("Authorization"))
+                export_id = self.path[len(prefix) :].strip()
+                if not export_id:
+                    raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "export_id is required")
+                manifest = self.service.get_manifest(export_id)
+                if manifest is None:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "not_found", f"manifest not found for export_id={export_id}")
+            except ApiError as exc:
+                self.send_json(exc.status, json_error_payload(exc.code, exc.message), request_id=request_id)
                 return
-            manifest = self.service.get_manifest(export_id)
-            if manifest is None:
+            except Exception as exc:
+                LOGGER.exception("request_id=%s unhandled export service error", request_id)
                 self.send_json(
-                    HTTPStatus.NOT_FOUND,
-                    json_error_payload("not_found", f"manifest not found for export_id={export_id}"),
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    json_error_payload("internal", f"unexpected error: {exc}"),
                     request_id=request_id,
                 )
                 return
@@ -702,20 +778,18 @@ class ExportRequestHandler(BaseHTTPRequestHandler):
             body = self.read_json_body(self.service.config.limits.max_request_bytes)
 
             if self.path == "/v1/exports/runs:export":
-                status, payload = self.service.execute_run_export(
+                result = self.service.execute_run_export(
                     body,
                     request_id=request_id,
                     requester_id=requester_id,
                 )
-                self.send_json(status, payload, request_id=request_id)
-                return
-
-            query = validate_query_request(body, self.service.config.limits)
-            result = self.service.execute_spooled_query_from_query(
-                query,
-                request_id=request_id,
-                requester_id=requester_id,
-            )
+            else:
+                query = validate_query_request(body, self.service.config.limits)
+                result = self.service.execute_spooled_query_from_query(
+                    query,
+                    request_id=request_id,
+                    requester_id=requester_id,
+                )
             try:
                 self.send_file_response(
                     HTTPStatus.OK,

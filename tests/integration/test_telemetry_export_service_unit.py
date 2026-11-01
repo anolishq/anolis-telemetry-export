@@ -865,7 +865,7 @@ def test_execute_spooled_query_ndjson_enforces_max_stream_bytes(
         limits=module.LimitConfig(
             max_span_seconds=base_cfg.limits.max_span_seconds,
             max_rows=base_cfg.limits.max_rows,
-            max_response_bytes=64,
+            max_response_bytes=base_cfg.limits.max_response_bytes,
             max_stream_bytes=64,
             max_selector_items=base_cfg.limits.max_selector_items,
             request_timeout_seconds=base_cfg.limits.request_timeout_seconds,
@@ -910,6 +910,7 @@ def test_execute_spooled_query_ndjson_enforces_max_stream_bytes(
 
     assert exc_info.value.status == 413
     assert exc_info.value.code == "limit_exceeded"
+    assert "max_stream_bytes=64" in exc_info.value.message
 
 
 def test_execute_spooled_query_csv_enforces_max_stream_bytes(monkeypatch: pytest.MonkeyPatch):
@@ -966,6 +967,7 @@ def test_execute_spooled_query_csv_enforces_max_stream_bytes(monkeypatch: pytest
 
     assert exc_info.value.status == 413
     assert exc_info.value.code == "limit_exceeded"
+    assert "max_stream_bytes=64" in exc_info.value.message
 
 
 def test_execute_spooled_query_json_enforces_max_response_bytes(monkeypatch: pytest.MonkeyPatch):
@@ -1022,6 +1024,7 @@ def test_execute_spooled_query_json_enforces_max_response_bytes(monkeypatch: pyt
 
     assert exc_info.value.status == 413
     assert exc_info.value.code == "limit_exceeded"
+    assert "max_response_bytes=128" in exc_info.value.message
 
 
 def test_execute_spooled_query_maps_stream_decode_errors_to_upstream_error(monkeypatch: pytest.MonkeyPatch):
@@ -1228,6 +1231,48 @@ def _csv_point(time: str, signal_id: str, value: float) -> str:
     return f",,0,{time},bioreactor-telemetry,bread0,rlht0,{signal_id},OK,{value},,,,"
 
 
+class _Stream:
+    """A streamed Influx answer, as influx_query_csv_stream returns it."""
+
+    def __init__(self, lines):
+        self._lines = lines
+        self.read = 0
+
+    def iter_lines(self, decode_unicode: bool = True):
+        for line in self._lines:
+            self.read += 1
+            yield line
+
+    def close(self):
+        return None
+
+
+def _stub_influx(monkeypatch: pytest.MonkeyPatch, module, answer):
+    """Answer each streamed query with `answer(query)`'s CSV text; runs:export
+    must not use the buffered client (#99)."""
+    streams = []
+
+    def stream(_cfg, query):
+        streams.append(_Stream(answer(query).split("\n")))
+        return streams[-1]
+
+    def buffered(_cfg, _query):
+        raise AssertionError("runs:export used the buffered Influx client")
+
+    monkeypatch.setattr(module, "influx_query_csv_stream", stream)
+    monkeypatch.setattr(module, "influx_query_csv", buffered)
+    return streams
+
+
+def _exported(result) -> dict:
+    """The spooled run-export envelope, read back and removed."""
+    try:
+        body: dict = json.loads(result.path.read_text(encoding="utf-8"))
+        return body
+    finally:
+        result.path.unlink(missing_ok=True)
+
+
 def test_run_export_seeds_only_series_without_a_point_at_started_at(monkeypatch: pytest.MonkeyPatch):
     # anolishq/anolis-telemetry-export#95: tc1_temp has a real point exactly at
     # started_at, so its pre-run value must not be seeded there as well.
@@ -1250,26 +1295,25 @@ def test_run_export_seeds_only_series_without_a_point_at_started_at(monkeypatch:
             _csv_point("2024-04-01T00:20:00Z", "tc2_temp", 31.0),
         ]
     )
-    monkeypatch.setattr(
-        module, "influx_query_csv", lambda _cfg, query: seed_csv if "|> tail(n: 1)" in query else window_csv
-    )
+    _stub_influx(monkeypatch, module, lambda query: seed_csv if "|> tail(n: 1)" in query else window_csv)
 
-    status, body = svc.execute_run_export(
-        {
-            "run": {
-                "schema_version": 1,
-                "run_id": "bioreactor-telemetry-95",
-                "started_at_epoch_ms": 1_711_929_600_000,  # 2024-04-01T00:00:00Z
-                "ended_at_epoch_ms": 1_711_933_200_000,
-                "polling_interval_ms": 2000,
-                "runtime_names": ["bioreactor-telemetry"],
-                "tag_scope": {"provider_ids": ["bread0"], "device_ids": ["rlht0"], "signal_ids": []},
-                "markers": [],
+    body = _exported(
+        svc.execute_run_export(
+            {
+                "run": {
+                    "schema_version": 1,
+                    "run_id": "bioreactor-telemetry-95",
+                    "started_at_epoch_ms": 1_711_929_600_000,  # 2024-04-01T00:00:00Z
+                    "ended_at_epoch_ms": 1_711_933_200_000,
+                    "polling_interval_ms": 2000,
+                    "runtime_names": ["bioreactor-telemetry"],
+                    "tag_scope": {"provider_ids": ["bread0"], "device_ids": ["rlht0"], "signal_ids": []},
+                    "markers": [],
+                }
             }
-        }
+        )
     )
 
-    assert status == 200
     assert [(row["timestamp"], row["signal_id"], row["value"]) for row in body["data"]] == [
         ("2024-04-01T00:00:00Z", "tc2_temp", 30.0),
         ("2024-04-01T00:00:00Z", "tc3_temp", 40.0),
@@ -1304,11 +1348,11 @@ def test_run_export_rejects_timezone_as_signals_query_does(monkeypatch: pytest.M
     svc = module.ExportService(_test_config(module))
     queries: list[str] = []
 
-    def query_csv(_cfg, query):
+    def query_csv(query):
         queries.append(query)
         return _CSV_HEADER
 
-    monkeypatch.setattr(module, "influx_query_csv", query_csv)
+    _stub_influx(monkeypatch, module, query_csv)
 
     with pytest.raises(module.ApiError) as signals_error:
         module.validate_query_request(
@@ -1340,11 +1384,11 @@ def test_run_export_rejects_keys_it_does_not_read(monkeypatch: pytest.MonkeyPatc
     svc = module.ExportService(_test_config(module))
     queries: list[str] = []
 
-    def query_csv(_cfg, query):
+    def query_csv(query):
         queries.append(query)
         return _CSV_HEADER
 
-    monkeypatch.setattr(module, "influx_query_csv", query_csv)
+    _stub_influx(monkeypatch, module, query_csv)
 
     with pytest.raises(module.ApiError) as error:
         svc.execute_run_export(_run_body(**extra))
@@ -1357,9 +1401,9 @@ def test_run_export_rejects_keys_it_does_not_read(monkeypatch: pytest.MonkeyPatc
 def test_run_export_accepts_every_documented_key(monkeypatch: pytest.MonkeyPatch):
     module = _load_module()
     svc = module.ExportService(_test_config(module))
-    monkeypatch.setattr(module, "influx_query_csv", lambda _cfg, _query: _CSV_HEADER)
+    _stub_influx(monkeypatch, module, lambda _query: _CSV_HEADER)
 
-    status, body = svc.execute_run_export(
+    result = svc.execute_run_export(
         _run_body(
             resolution={"mode": "raw_event"},
             format="json",
@@ -1368,5 +1412,236 @@ def test_run_export_accepts_every_documented_key(monkeypatch: pytest.MonkeyPatch
         )
     )
 
-    assert status == 200
-    assert body["status"] == "ok"
+    assert _exported(result)["status"] == "ok"
+
+
+def _limited_config(module, **limits):
+    base = _test_config(module)
+    fields = {name: getattr(base.limits, name) for name in base.limits.__dataclass_fields__}
+    return module.AppConfig(
+        server=base.server,
+        influx=base.influx,
+        limits=module.LimitConfig(**{**fields, **limits}),
+        authorization=base.authorization,
+    )
+
+
+def _window(n: int) -> str:
+    return "\n".join(
+        [_CSV_HEADER]
+        + [_csv_point(f"2024-04-01T00:{i // 60:02d}:{i % 60:02d}Z", "tc1_temp", 20.0 + i) for i in range(n)]
+    )
+
+
+@pytest.mark.parametrize("fmt", ["csv", "ndjson"])
+def test_run_export_csv_and_ndjson_are_held_to_max_stream_bytes(monkeypatch: pytest.MonkeyPatch, fmt):
+    # anolishq/anolis-telemetry-export#99: runs:export checked only
+    # max_response_bytes, so max_stream_bytes never applied to it.
+    module = _load_module()
+    svc = module.ExportService(_limited_config(module, max_stream_bytes=256, max_response_bytes=1_000_000))
+    _stub_influx(monkeypatch, module, lambda _query: _window(50))
+
+    with pytest.raises(module.ApiError) as error:
+        svc.execute_run_export(_run_body(format=fmt, seed_stable_signals=False))
+    assert (error.value.status, error.value.code) == (413, "limit_exceeded")
+    assert "max_stream_bytes=256" in error.value.message
+
+
+def test_run_export_json_is_held_to_max_response_bytes(monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    svc = module.ExportService(_limited_config(module, max_stream_bytes=1_000_000, max_response_bytes=256))
+    _stub_influx(monkeypatch, module, lambda _query: _window(50))
+
+    with pytest.raises(module.ApiError) as error:
+        svc.execute_run_export(_run_body(format="json", seed_stable_signals=False))
+    assert (error.value.status, error.value.code) == (413, "limit_exceeded")
+    assert "max_response_bytes=256" in error.value.message
+
+
+def test_run_export_enforces_max_rows_while_reading(monkeypatch: pytest.MonkeyPatch):
+    module = _load_module()
+    svc = module.ExportService(_limited_config(module, max_rows=10))
+    streams = _stub_influx(monkeypatch, module, lambda _query: _window(1000))
+
+    with pytest.raises(module.ApiError) as error:
+        svc.execute_run_export(_run_body(seed_stable_signals=False))
+    assert (error.value.status, error.value.code) == (413, "limit_exceeded")
+    # The header and 11 rows, not the 1000 the window holds.
+    assert streams[0].read <= 12
+
+
+@pytest.mark.parametrize("fmt", ["json", "csv", "ndjson"])
+def test_run_export_body_is_unchanged_by_streaming(monkeypatch: pytest.MonkeyPatch, fmt):
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    seed = "\n".join([_CSV_HEADER, _csv_point("2024-03-31T23:59:50Z", "tc2_temp", 30.0)])
+    window = _window(5)
+    _stub_influx(monkeypatch, module, lambda query: seed if "|> tail(n: 1)" in query else window)
+
+    body = _exported(svc.execute_run_export(_run_body(format=fmt)))
+
+    from telemetry_export.export_core.models import DEFAULT_COLUMNS
+
+    columns = list(DEFAULT_COLUMNS)  # the request sets none
+    seed_rows = module.parse_influx_csv_rows(seed)
+    for row in seed_rows:
+        row["_time"] = "2024-04-01T00:00:00Z"
+    rows = module.normalize_rows(seed_rows + module.parse_influx_csv_rows(window), columns)
+    assert body["manifest"]["row_count"] == 6
+    if fmt == "json":
+        assert body["data"] == rows
+    elif fmt == "ndjson":
+        assert body["ndjson_body"] == "".join(json.dumps(row, separators=(",", ":")) + "\n" for row in rows)
+    else:
+        assert body["csv_body"] == module.render_csv(rows, columns)
+    assert body["annotations"] == body["manifest"]["annotations"]
+    assert (body["status"], body["dataset"], body["run_id"], body["format"]) == (
+        "ok",
+        "run",
+        "bioreactor-telemetry-97",
+        fmt,
+    )
+
+
+def test_run_export_answers_with_its_export_id_and_manifest_hash(monkeypatch: pytest.MonkeyPatch):
+    # anolishq/anolis-telemetry-export#104: runs:export sent neither header.
+    import http.client
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    _stub_influx(monkeypatch, module, lambda _query: _window(3))
+    handler = type("Handler", (module.ExportRequestHandler,), {"service": svc})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        for fmt in ("json", "csv", "ndjson"):
+            conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+            conn.request(
+                "POST",
+                "/v1/exports/runs:export",
+                body=json.dumps(_run_body(format=fmt)),
+                headers={"Authorization": "Bearer export-dev-token", "Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            body = json.loads(response.read())
+            assert response.status == 200
+            assert response.getheader("Content-Type") == "application/json"
+            export_id = response.getheader("X-Export-Id")
+            assert export_id == body["manifest"]["export_id"]
+            stored = svc._manifest_by_export_id[export_id]["manifest_hash"]
+            assert response.getheader("X-Export-Manifest-Hash") == stored
+            assert stored.startswith("sha256:")
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("scheme", ["Bearer", "bearer", "BEARER", "bEaReR"])
+def test_authorize_matches_the_scheme_in_any_case(scheme):
+    # anolishq/anolis-telemetry-export#104: RFC 7235 auth schemes are case-insensitive.
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    svc.authorize(f"{scheme} export-dev-token")
+    svc.authorize(f"{scheme}   export-dev-token")
+    with pytest.raises(module.ApiError) as error:
+        svc.authorize(f"{scheme} wrong-token")
+    assert (error.value.status, error.value.code) == (401, "unauthenticated")
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        None,
+        "",
+        "Bearer",
+        "Bearer ",
+        "Basic export-dev-token",
+        "Bearer\texport-dev-token",
+        "Bearerexport-dev-token",
+        "Bearer \xe9",
+        "Bearer export-dev-token\xe9",
+    ],
+)
+def test_authorize_still_refuses_a_missing_or_malformed_header(header):
+    module = _load_module()
+    svc = module.ExportService(_test_config(module))
+    with pytest.raises(module.ApiError) as error:
+        svc.authorize(header)
+    assert (error.value.status, error.value.code) == (401, "unauthenticated")
+
+
+def _serve(module):
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    handler = type("Handler", (module.ExportRequestHandler,), {"service": module.ExportService(_test_config(module))})
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+@pytest.mark.parametrize("authorization", [None, "Bearer wrong-token", "Token export-dev-token", "Bearer \xe9"])
+def test_manifest_route_answers_401_without_a_valid_token(authorization):
+    # anolishq/anolis-telemetry-export#104: do_GET raised ApiError outside a
+    # handler, so the server closed the connection instead of answering.
+    import http.client
+
+    module = _load_module()
+    server = _serve(module)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        headers = {"X-Request-Id": "req-401"}
+        if authorization is not None:
+            headers["Authorization"] = authorization
+        conn.request("GET", "/v1/exports/manifests/abc", headers=headers)
+        response = conn.getresponse()
+        body = json.loads(response.read())
+        assert response.status == 401
+        assert response.getheader("X-Request-Id") == "req-401"
+        assert body["error"]["code"] == "unauthenticated"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_manifest_route_still_answers_404_with_a_valid_token():
+    import http.client
+
+    module = _load_module()
+    server = _serve(module)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        conn.request("GET", "/v1/exports/manifests/abc", headers={"Authorization": "bearer export-dev-token"})
+        response = conn.getresponse()
+        assert response.status == 404
+        assert json.loads(response.read())["error"]["code"] == "not_found"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_manifest_route_answers_500_json_on_an_unexpected_error(monkeypatch: pytest.MonkeyPatch):
+    import http.client
+
+    module = _load_module()
+    server = _serve(module)
+
+    def broken(_export_id):
+        raise RuntimeError("store unavailable")
+
+    monkeypatch.setattr(server.RequestHandlerClass.service, "get_manifest", broken)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
+        conn.request("GET", "/v1/exports/manifests/abc", headers={"Authorization": "Bearer export-dev-token"})
+        response = conn.getresponse()
+        assert response.status == 500
+        assert json.loads(response.read())["error"]["code"] == "internal"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
