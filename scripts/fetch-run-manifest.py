@@ -8,9 +8,9 @@ runtime is offline.
 
 It reads:
   * `GET /v0/runs/{run_id}`         — window, tag_scope, polling interval, provenance
-  * `GET /v0/runs/{run_id}/events`  — operator markers + lifecycle events
-                                      (anolishq/anolis#116; skipped gracefully if the
-                                      runtime predates it)
+  * `GET /v0/runs/{run_id}/events`  — operator markers + lifecycle events, every
+                                      page of them (anolishq/anolis#116; skipped
+                                      gracefully if the runtime predates it)
 
 The runtime name (the runtime_name scope dim) is the run_id's prefix: the runtime
 mints run ids as `<runtime.name>-<26-char ULID>`, and no endpoint returns the name
@@ -33,6 +33,9 @@ from urllib.request import Request, urlopen
 
 MANIFEST_SCHEMA_VERSION = 1
 
+# The runtime pages /events: limit defaults to 200 and is capped at 1000.
+EVENTS_PAGE_LIMIT = 1000
+
 # `<runtime.name>-<ULID>`: 26 Crockford base32 characters after the last hyphen.
 _RUN_ID_RE = re.compile(r"^(?P<runtime_name>.+)-[0-9A-HJKMNP-TV-Z]{26}$")
 
@@ -46,16 +49,29 @@ def _get_json(base_url: str, path: str, token: str | None, *, timeout: float = 1
         return json.loads(response.read().decode("utf-8"))
 
 
+def _fetch_events(base_url: str, run_id: str, token: str | None) -> list[dict[str, Any]]:
+    """Every event of the run, page by page, until a page comes back short (#102)."""
+    events: list[dict[str, Any]] = []
+    while True:
+        path = f"/v0/runs/{run_id}/events?limit={EVENTS_PAGE_LIMIT}&offset={len(events)}"
+        body = _get_json(base_url, path, token)
+        page = body.get("events", []) if isinstance(body, dict) else []
+        if events and page and page[0].get("sequence", 0) <= events[-1].get("sequence", 0):
+            raise RuntimeError(f"/v0/runs/{run_id}/events ignored offset={len(events)}; cannot read every event")
+        events.extend(page)
+        if len(page) < EVENTS_PAGE_LIMIT:
+            return events
+
+
 def _fetch_markers(base_url: str, run_id: str, token: str | None) -> list[dict[str, Any]]:
     """Fetch run events as markers; tolerate a runtime without the events endpoint."""
     try:
-        body = _get_json(base_url, f"/v0/runs/{run_id}/events", token)
+        events = _fetch_events(base_url, run_id, token)
     except HTTPError as exc:
         if exc.code == 404:
             print(f"note: /v0/runs/{run_id}/events not available (HTTP 404) — markers omitted", file=sys.stderr)
             return []
         raise
-    events = body.get("events", []) if isinstance(body, dict) else []
     markers: list[dict[str, Any]] = []
     for event in events:
         markers.append(
