@@ -46,14 +46,16 @@ Optional headers for traceability:
 If missing, the service generates `X-Request-Id` and defaults requester to
 `anonymous`. Successful responses include `X-Request-Id`.
 
-`POST /v1/exports/signals:query` and `POST /v1/exports/runs:export` responses
-also include:
+`POST /v1/exports/signals:query`, `POST /v1/exports/runs:export` and
+`GET /v1/exports/manifests/{export_id}` responses also include:
 
 1. `X-Export-Id`
 2. `X-Export-Manifest-Hash` (`sha256:...`)
 
 The full manifest is always available in JSON bodies and via
-`GET /v1/exports/manifests/{export_id}`.
+`GET /v1/exports/manifests/{export_id}`, whose body also carries the hash
+stored for that export as `manifest_hash`, the same value the export's
+`X-Export-Manifest-Hash` header carried.
 
 ## Optional Scope Enforcement
 

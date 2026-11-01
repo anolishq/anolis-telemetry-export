@@ -205,12 +205,17 @@ class ExportService:
             )
 
     def get_manifest(self, export_id: str) -> dict[str, Any] | None:
+        record = self.get_manifest_record(export_id)
+        return None if record is None else record[0]
+
+    def get_manifest_record(self, export_id: str) -> tuple[dict[str, Any], str] | None:
+        """The stored manifest and its hash, read together under one lock."""
         with self._manifest_lock:
             self._prune_manifests_locked()
             record = self._manifest_by_export_id.get(export_id)
             if record is None:
                 return None
-            return dict(record["manifest"])
+            return dict(record["manifest"]), str(record["manifest_hash"])
 
     def _prune_manifests_locked(self) -> None:
         now = time.time()
@@ -732,9 +737,10 @@ class ExportRequestHandler(BaseHTTPRequestHandler):
                 export_id = self.path[len(prefix) :].strip()
                 if not export_id:
                     raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", "export_id is required")
-                manifest = self.service.get_manifest(export_id)
-                if manifest is None:
+                record = self.service.get_manifest_record(export_id)
+                if record is None:
                     raise ApiError(HTTPStatus.NOT_FOUND, "not_found", f"manifest not found for export_id={export_id}")
+                manifest, manifest_hash = record
             except ApiError as exc:
                 self.send_json(exc.status, json_error_payload(exc.code, exc.message), request_id=request_id)
                 return
@@ -748,8 +754,9 @@ class ExportRequestHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(
                 HTTPStatus.OK,
-                {"status": "ok", "export_id": export_id, "manifest": manifest},
+                {"status": "ok", "export_id": export_id, "manifest": manifest, "manifest_hash": manifest_hash},
                 request_id=request_id,
+                headers={"X-Export-Id": export_id, "X-Export-Manifest-Hash": manifest_hash},
             )
             return
 
@@ -841,12 +848,21 @@ class ExportRequestHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as exc:
             raise ApiError(HTTPStatus.BAD_REQUEST, "invalid_argument", f"invalid JSON body: {exc}") from exc
 
-    def send_json(self, status: int | HTTPStatus, payload: dict[str, Any], *, request_id: str) -> None:
+    def send_json(
+        self,
+        status: int | HTTPStatus,
+        payload: dict[str, Any],
+        *,
+        request_id: str,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Request-Id", request_id)
+        for name, value in (headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 

@@ -1634,13 +1634,47 @@ def test_manifest_route_answers_500_json_on_an_unexpected_error(monkeypatch: pyt
     def broken(_export_id):
         raise RuntimeError("store unavailable")
 
-    monkeypatch.setattr(server.RequestHandlerClass.service, "get_manifest", broken)
+    monkeypatch.setattr(server.RequestHandlerClass.service, "get_manifest_record", broken)
     try:
         conn = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=5)
         conn.request("GET", "/v1/exports/manifests/abc", headers={"Authorization": "Bearer export-dev-token"})
         response = conn.getresponse()
         assert response.status == 500
         assert json.loads(response.read())["error"]["code"] == "internal"
+        conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_manifest_route_returns_the_stored_hash(monkeypatch: pytest.MonkeyPatch):
+    # anolishq/anolis-telemetry-export#104: the route returned the manifest
+    # but not the hash stored with it, so an export could not be checked.
+    import http.client
+
+    module = _load_module()
+    _stub_influx(monkeypatch, module, lambda _query: _window(3))
+    server = _serve(module)
+    port = server.server_address[1]
+    auth = {"Authorization": "Bearer export-dev-token"}
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/v1/exports/runs:export", body=json.dumps(_run_body()), headers=auth)
+        exported = conn.getresponse()
+        exported.read()
+        export_id = exported.getheader("X-Export-Id")
+        export_hash = exported.getheader("X-Export-Manifest-Hash")
+        conn.close()
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("GET", f"/v1/exports/manifests/{export_id}", headers=auth)
+        response = conn.getresponse()
+        body = json.loads(response.read())
+        assert response.status == 200
+        assert body["manifest_hash"] == export_hash
+        assert response.getheader("X-Export-Manifest-Hash") == export_hash
+        assert response.getheader("X-Export-Id") == export_id
+        assert export_hash is not None and export_hash.startswith("sha256:")
         conn.close()
     finally:
         server.shutdown()
