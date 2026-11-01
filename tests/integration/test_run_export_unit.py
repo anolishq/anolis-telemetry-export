@@ -64,6 +64,22 @@ def test_parse_run_manifest_rejects_missing_run_id_and_bad_window():
         parse_run_manifest("not-an-object")
 
 
+@pytest.mark.parametrize("version", [2, 99, 0, -5])
+def test_parse_run_manifest_rejects_an_unsupported_schema_version(version):
+    # anolishq/anolis-telemetry-export#96: any integer was read with v1 rules.
+    with pytest.raises(ApiError) as error:
+        parse_run_manifest(_manifest_body(schema_version=version))
+    assert (error.value.status, error.value.code) == (400, "invalid_argument")
+    assert "run.schema_version" in error.value.message
+    assert "supported: 1" in error.value.message
+
+
+def test_parse_run_manifest_defaults_an_omitted_schema_version_to_1():
+    body = _manifest_body()
+    del body["schema_version"]
+    assert parse_run_manifest(body).schema_version == 1
+
+
 def test_open_run_has_no_scope_flag_and_null_end():
     run = parse_run_manifest(
         _manifest_body(ended_at_epoch_ms=None, tag_scope={"provider_ids": [], "device_ids": [], "signal_ids": []})
@@ -137,6 +153,7 @@ def test_run_provenance_carries_polling_interval_for_boundary_fuzz():
     assert prov["polling_interval_ms"] == 2000
     assert prov["is_open"] is False
     assert prov["tag_scope"]["provider_ids"] == ["bread0"]
+    assert prov["schema_version"] == 1
 
 
 def _load_fetch_run_manifest():
@@ -177,7 +194,7 @@ def _stub_runtime(monkeypatch: pytest.MonkeyPatch, module, run_id: str) -> None:
         },
         f"/v0/runs/{run_id}/events": {"events": []},
     }
-    monkeypatch.setattr(module, "_get_json", lambda _base, path, _token, **_kw: responses[path])
+    monkeypatch.setattr(module, "_get_json", lambda _base, path, _token, **_kw: responses[path.split("?")[0]])
 
 
 def test_fetch_run_manifest_scopes_to_the_runtime_named_in_the_run_id(monkeypatch: pytest.MonkeyPatch):
@@ -197,6 +214,82 @@ def test_fetch_run_manifest_refuses_an_unscoped_manifest(monkeypatch: pytest.Mon
 
     with pytest.raises(RuntimeError, match="--runtime-name"):
         module.build_manifest("http://127.0.0.1:8080", run_id, None)
+
+
+def _stub_paged_runtime(monkeypatch: pytest.MonkeyPatch, module, run_id: str, event_count: int) -> list[str]:
+    """A runtime that pages /events as the runtime's handler does: limit
+    defaults to 200 and is capped at 1000, offset defaults to 0."""
+    from urllib.parse import parse_qs, urlsplit
+
+    events = [
+        {"sequence": n, "category": "annotation", "type": "mark", "occurred_at_epoch_ms": 1_711_929_600_000 + n}
+        for n in range(1, event_count + 1)
+    ]
+    requests: list[str] = []
+
+    def get_json(_base, path, _token, **_kw):
+        requests.append(path)
+        url = urlsplit(path)
+        if url.path == f"/v0/runs/{run_id}":
+            return {
+                "run": {
+                    "run_id": run_id,
+                    "started_at_epoch_ms": 1_711_929_600_000,
+                    "ended_at_epoch_ms": 1_711_933_200_000,
+                    "tag_scope": {"provider_ids": ["sim0"]},
+                }
+            }
+        query = parse_qs(url.query)
+        limit = min(int(query.get("limit", ["200"])[0]), 1000)
+        offset = int(query.get("offset", ["0"])[0])
+        page = events[offset : offset + limit]
+        return {"status": {"code": "OK"}, "events": page, "count": len(page)}
+
+    monkeypatch.setattr(module, "_get_json", get_json)
+    return requests
+
+
+@pytest.mark.parametrize("event_count", [250, 2500, 1000, 0])
+def test_fetch_run_manifest_reads_every_page_of_events(monkeypatch: pytest.MonkeyPatch, event_count):
+    # anolishq/anolis-telemetry-export#102: one unpaged request kept the first
+    # 200 events and dropped the rest without a word.
+    module = _load_fetch_run_manifest()
+    run_id = "bench-a-01J9ZQ4Y7K3M8N2P5R6S7T8V9W"
+    _stub_paged_runtime(monkeypatch, module, run_id, event_count)
+
+    manifest = module.build_manifest("http://127.0.0.1:8080", run_id, None)
+
+    assert [m["sequence"] for m in manifest["markers"]] == list(range(1, event_count + 1))
+
+
+def test_fetch_run_manifest_refuses_a_runtime_that_ignores_offset(monkeypatch: pytest.MonkeyPatch):
+    module = _load_fetch_run_manifest()
+    run_id = "bench-a-01J9ZQ4Y7K3M8N2P5R6S7T8V9W"
+    page = [{"sequence": n, "occurred_at_epoch_ms": n} for n in range(1, 1001)]
+
+    def get_json(_base, path, _token, **_kw):
+        if "/events" in path:
+            return {"events": page}
+        return {"run": {"run_id": run_id, "started_at_epoch_ms": 1, "ended_at_epoch_ms": 2}}
+
+    monkeypatch.setattr(module, "_get_json", get_json)
+    with pytest.raises(RuntimeError, match="offset"):
+        module.build_manifest("http://127.0.0.1:8080", run_id, None)
+
+
+def test_fetch_run_manifest_still_omits_markers_without_the_events_endpoint(monkeypatch: pytest.MonkeyPatch):
+    from urllib.error import HTTPError
+
+    module = _load_fetch_run_manifest()
+    run_id = "bench-a-01J9ZQ4Y7K3M8N2P5R6S7T8V9W"
+
+    def get_json(_base, path, _token, **_kw):
+        if "/events" in path:
+            raise HTTPError(path, 404, "Not Found", {}, None)  # type: ignore[arg-type]
+        return {"run": {"run_id": run_id, "started_at_epoch_ms": 1, "ended_at_epoch_ms": 2}}
+
+    monkeypatch.setattr(module, "_get_json", get_json)
+    assert module.build_manifest("http://127.0.0.1:8080", run_id, None)["markers"] == []
 
 
 def test_provisioned_dashboard_annotations_reach_every_panel():
