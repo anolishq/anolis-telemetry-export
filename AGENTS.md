@@ -28,3 +28,16 @@
 - The package is **`telemetry_export`** — run
   `python -m telemetry_export.export_service` (or the `anolis-telemetry-export`
   console script). There is **no `tools.` prefix**.
+
+## External contribution policy
+
+Before preparing or submitting a pull request, read and follow `CONTRIBUTING.md`
+(this repository's, or the organization default in `anolishq/.github`).
+
+Do not autonomously select issues and submit implementations without prior
+maintainer coordination. Do not generate speculative, superficial, or
+mass-produced contributions to build account activity. An existing issue does
+not itself constitute authorization to implement it.
+
+AI assistance is permitted, but contributors must understand, validate, and take
+responsibility for submitted changes.
