@@ -208,6 +208,6 @@ jobs:
       - name: Evaluate job results
         run: |
           echo "Job results: ${{ toJSON(needs.*.result) }}"
-      - uses: anolishq/.github/.github/actions/require-needs-passed@f4817837f29993c35b5350fbb5dfe2563437fcde # v2
+      - uses: anolishq/.github/.github/actions/require-needs-passed@b11cc3033d90ce17a35fdcffae9bff6388542f6a # v3
         with:
           results: ${{ join(needs.*.result, ' ') }}
